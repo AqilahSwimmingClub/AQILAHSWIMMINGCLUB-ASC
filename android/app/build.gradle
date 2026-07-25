@@ -1,0 +1,61 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.aqilahswimmingclub.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.aqilahswimmingclub.app'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.activity:activity:1.10.0'
+}
+
+// Saat tombol Build ditekan di Android Studio, web otomatis dibangun lalu
+// disalin ke aset Android. Folder aset lama dibersihkan agar APK tidak blank
+// karena masih memakai bundle versi sebelumnya.
+def projectRoot = rootProject.projectDir.parentFile
+def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+
+tasks.register('installWebDependencies', Exec) {
+    workingDir projectRoot
+    onlyIf { !new File(projectRoot, 'node_modules').exists() }
+    if (isWindows) commandLine 'cmd', '/c', 'npm install'
+    else commandLine 'bash', '-lc', 'npm install'
+}
+
+tasks.register('buildWeb', Exec) {
+    dependsOn 'installWebDependencies'
+    workingDir projectRoot
+    if (isWindows) commandLine 'cmd', '/c', 'npm run build'
+    else commandLine 'bash', '-lc', 'npm run build'
+}
+
+tasks.register('cleanWebAssets', Delete) {
+    delete new File(projectDir, 'src/main/assets/public')
+}
+
+tasks.register('copyWebAssets', Copy) {
+    dependsOn 'cleanWebAssets', 'buildWeb'
+    from new File(projectRoot, 'dist')
+    into new File(projectDir, 'src/main/assets/public')
+}
+
+preBuild.dependsOn 'copyWebAssets'

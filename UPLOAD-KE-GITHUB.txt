@@ -1,0 +1,16 @@
+UPLOAD KE REPOSITORY BARU
+
+PENTING: upload ISI folder ini ke ROOT repository.
+Di halaman utama repository harus langsung terlihat:
+- src
+- public
+- android
+- package.json
+- index.html
+- vite.config.js
+- vercel.json
+
+Jangan upload folder pembungkus tambahan dan jangan membuat file bernama ASC.
+
+Commit message:
+fix: restore src structure and fix Vercel Android blank screen

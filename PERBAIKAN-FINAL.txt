@@ -1,0 +1,6 @@
+Perbaikan versi ini:
+1. src/main.js dan src/style.css berada langsung di root proyek agar Vercel dapat menemukannya.
+2. index.html memakai jalur relatif ./src/main.js.
+3. Struktur ZIP diratakan, tanpa folder pembungkus aqilah_android_ready.
+4. Android Studio membersihkan aset lama, menjalankan build web, lalu menyalin dist terbaru ke APK.
+5. Folder android sudah tersedia dan dapat langsung dibuka di Android Studio.
