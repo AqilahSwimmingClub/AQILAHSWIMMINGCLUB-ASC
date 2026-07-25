@@ -1,0 +1,8 @@
+PERBAIKAN TAMPILAN HP 6 INCI
+
+- Saat salah satu menu pada sidebar dipilih, sidebar dan lapisan gelap ditutup terlebih dahulu.
+- Halaman tujuan langsung dirender dengan lebar 100%.
+- Posisi halaman otomatis kembali ke atas.
+- Tidak ada sidebar transparan atau lapisan gelap yang tertinggal.
+- Bottom navigation tetap aktif.
+- Logika fitur, Supabase, ikon, dan folder Android tidak diubah.

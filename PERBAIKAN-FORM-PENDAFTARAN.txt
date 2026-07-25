@@ -1,0 +1,7 @@
+PERBAIKAN FORM PENDAFTARAN ATLET
+
+- Form pendaftaran dapat digulir penuh ke atas dan ke bawah pada HP/tablet.
+- Overlay pendaftaran menjadi area scroll utama agar field paling bawah tidak tertutup navigasi sistem.
+- Poster paket pendaftaran menggunakan path relatif yang kompatibel dengan Vercel dan Android WebView.
+- Form mobile satu kolom dan tombol kirim tetap dapat dijangkau.
+- Fitur, Supabase, login, dan data lain tidak diubah.

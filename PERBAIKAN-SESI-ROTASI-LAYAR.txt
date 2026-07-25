@@ -1,0 +1,8 @@
+PERBAIKAN SESI SAAT ROTASI LAYAR
+
+- Login Admin, Pelatih, dan Orang Tua tidak lagi hilang saat HP/tablet diputar.
+- Halaman terakhir tetap dibuka setelah perubahan vertikal-horizontal.
+- Password tidak disimpan; hanya peran, ID akun aktif, dan halaman terakhir.
+- Android Activity menangani perubahan orientasi tanpa membuat ulang aplikasi.
+- State WebView juga disimpan sebagai perlindungan tambahan.
+- Tombol Keluar tetap menghapus sesi secara normal.

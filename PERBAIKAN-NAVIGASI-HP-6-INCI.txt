@@ -1,0 +1,17 @@
+PERBAIKAN NAVIGASI HP 6 INCI KE ATAS
+
+Perubahan:
+1. Menu samping otomatis tertutup sebelum halaman tujuan dirender.
+2. Isi halaman langsung tampil penuh setelah menu dipilih.
+3. Posisi halaman kembali ke bagian atas setiap pergantian menu.
+4. Sidebar dibuat flex-column dan daftar menu dapat digulir sampai bawah.
+5. Tombol Keluar tetap terlihat dan tidak menimpa menu.
+6. Bottom navigation tetap aktif untuk menu utama.
+7. Logika fitur, Supabase, ikon, dan konfigurasi Android tidak diubah.
+
+BUILD ANDROID:
+- Buka folder android di Android Studio.
+- Build > Clean Project.
+- Build > Rebuild Project.
+- Build > Build Bundle(s) / APK(s) > Build APK(s).
+- Hapus APK/aplikasi versi lama dari HP sebelum memasang APK baru.

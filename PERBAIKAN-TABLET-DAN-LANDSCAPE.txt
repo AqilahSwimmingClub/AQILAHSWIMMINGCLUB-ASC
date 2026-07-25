@@ -1,0 +1,10 @@
+PERBAIKAN RESPONSIVE TABLET DAN HP LANDSCAPE
+
+- Tablet posisi vertikal menggunakan bottom navigation seperti aplikasi Android.
+- HP 6 inci ke atas posisi vertikal menggunakan bottom navigation.
+- HP posisi horizontal tetap menggunakan bottom navigation yang lebih ringkas.
+- Menu Lainnya membuka drawer yang dapat digulir.
+- Setelah memilih menu, drawer tertutup dan isi halaman tampil penuh.
+- Konten memperoleh ruang bawah agar tidak tertutup navigasi.
+- Tablet portrait memakai area konten lebih lega dan kartu dua kolom jika memungkinkan.
+- Logo, Supabase, login, database, dan fungsi aplikasi tidak diubah.

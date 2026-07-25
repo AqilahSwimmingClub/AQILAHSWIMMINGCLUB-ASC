@@ -1,0 +1,12 @@
+PERBAIKAN FITUR UPLOAD - AQILAH SWIMMING CLUB
+
+Perubahan:
+1. Foto dan dokumen tidak lagi dimasukkan sebagai Base64 ke payload utama.
+2. File diunggah ke Supabase Storage bucket asc-uploads.
+3. Mendukung foto profil orang tua/atlet, foto pelatih, logo, program latihan, flyer, akta, bukti pembayaran SPP/lomba, dan bukti gaji pelatih.
+4. Gambar otomatis dikompres agar upload lebih cepat di HP.
+5. PDF didukung untuk dokumen dan bukti pembayaran.
+6. Pesan error upload dibuat lebih jelas.
+
+WAJIB:
+Jalankan ulang seluruh isi SUPABASE-SETUP.sql di SQL Editor Supabase sebelum mencoba upload.
