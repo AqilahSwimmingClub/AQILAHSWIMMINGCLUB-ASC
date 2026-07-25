@@ -1,0 +1,20 @@
+PERBAIKAN APK AQILAH SWIMMING CLUB
+
+1. Layar putih diperbaiki dengan memuat bundle Vite melalui origin HTTPS lokal
+   (https://app.local/public/index.html), bukan file:///android_asset/.
+   JavaScript ES-module pada WebView dapat gagal jika dibuka langsung dari file://.
+
+2. Ikon Android bawaan diganti dengan logo ASC pada seluruh kepadatan layar:
+   mdpi, hdpi, xhdpi, xxhdpi, xxxhdpi.
+
+3. AndroidManifest sekarang memakai:
+   android:icon="@mipmap/ic_launcher"
+   android:roundIcon="@mipmap/ic_launcher_round"
+
+CARA BUILD:
+- Ekstrak ZIP.
+- Buka folder android di Android Studio.
+- Build > Clean Project.
+- Build > Rebuild Project.
+- Build > Build APK(s).
+- Hapus aplikasi versi lama dari HP sebelum memasang APK baru agar ikon lama tidak tersimpan.
