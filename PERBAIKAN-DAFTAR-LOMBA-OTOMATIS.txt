@@ -1,0 +1,6 @@
+PERBAIKAN DAFTAR LOMBA ORANG TUA
+- Pilihan nomor lomba otomatis mengambil seluruh gaya renang yang tersedia di aplikasi.
+- Setiap gaya otomatis tersedia dalam jarak 25m, 50m, dan 100m.
+- Admin tidak perlu mengetik nomor lomba satu per satu ketika membuat event.
+- Informasi Bank Mandiri, NOMOR REKENING, dan ATAS NAMA dibuat lebih jelas.
+- Daftar pilihan nomor lomba dibuat dapat digulir agar tetap rapi.

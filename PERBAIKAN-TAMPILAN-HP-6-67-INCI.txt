@@ -1,0 +1,13 @@
+PERBAIKAN TAMPILAN HP 6,67 INCI KE ATAS
+
+Perubahan:
+1. Sidebar/menu HP dapat digulir sampai menu paling bawah dan tombol Keluar tetap terlihat.
+2. Lebar sidebar disesuaikan untuk layar Android 360-480 px.
+3. Header, judul halaman, tanggal, notifikasi, dan status sinkron tidak terpotong.
+4. Dashboard otomatis menjadi satu kolom pada layar HP.
+5. Kartu, formulir, tombol, dan gambar menyesuaikan lebar layar.
+6. Tabel tetap lengkap dan dapat digeser ke kiri/kanan.
+7. Dialog/form dapat digulir secara vertikal dan tidak keluar dari layar.
+8. Safe area Android/iPhone diperhitungkan.
+
+Tidak ada fitur aplikasi yang dihapus atau diubah. Perbaikan hanya pada tampilan responsif.

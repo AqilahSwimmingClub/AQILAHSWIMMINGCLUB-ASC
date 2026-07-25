@@ -1,0 +1,8 @@
+PERBAIKAN NAVIGASI HP
+
+1. Setelah salah satu menu dipilih, panel navigasi otomatis tertutup.
+2. Ditambahkan lapisan gelap di belakang menu; sentuh area gelap untuk menutup menu.
+3. Lebar menu diperkecil agar tidak memenuhi hampir seluruh layar HP.
+4. Halaman di belakang tidak ikut bergulir ketika menu terbuka.
+5. Isi setiap halaman kembali memenuhi lebar layar setelah menu ditutup.
+6. Semua fitur dan data aplikasi tetap dipertahankan.

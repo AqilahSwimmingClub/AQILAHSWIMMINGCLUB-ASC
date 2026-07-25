@@ -1,0 +1,13 @@
+TAHAP PENYEMPURNAAN PROFIL DAN DATA UTAMA
+
+Perubahan:
+1. Admin dapat mengedit data Pelatih.
+2. Foto profil Pelatih dapat diganti dari menu Admin.
+3. Admin dapat mengubah nama, username, status aktif, dan password Pelatih.
+4. Foto lama tetap digunakan bila Admin tidak memilih foto baru.
+5. Daftar Atlet menampilkan ID berikutnya yang akan digunakan.
+6. Nomor ID Atlet yang kosong tetap otomatis digunakan kembali.
+7. Data Atlet tetap diurutkan berdasarkan ID agar mudah diperiksa Admin.
+
+Commit GitHub:
+feat: sempurnakan profil pelatih dan pengelolaan ID atlet

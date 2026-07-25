@@ -1,0 +1,9 @@
+PERBAIKAN 23 JULI 2026
+
+1. Koneksi Supabase dicoba ulang otomatis sampai 3 kali sebelum memakai data perangkat.
+2. Pesan Console sekarang menampilkan penyebab Supabase yang lebih jelas.
+3. ID atlet memakai nomor kosong terkecil. ID atlet yang telah dihapus dapat digunakan kembali.
+4. Pendaftar baru yang disetujui Admin otomatis mendapatkan ID kosong terkecil tersebut.
+5. Admin dapat mengunggah foto profil saat menambahkan Pelatih.
+6. Pelatih dapat mengganti foto profil sendiri melalui menu Pengaturan.
+7. Foto pelatih ditampilkan pada tabel Data Pelatih.

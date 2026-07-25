@@ -1,0 +1,10 @@
+LANGKAH SANGAT SINGKAT
+1. Ekstrak ZIP.
+2. Buka Android Studio.
+3. Pilih Open, lalu pilih folder: aqilah_android_ready/android
+4. Tunggu Gradle Sync selesai.
+5. Pilih Build > Build Bundle(s) / APK(s) > Build APK(s).
+
+Saat Build ditekan, Android Studio otomatis menjalankan npm install, npm run build,
+dan menyalin hasil web ke aplikasi Android. Folder android sudah tersedia.
+Minimum Android: Android 10 (API 29).

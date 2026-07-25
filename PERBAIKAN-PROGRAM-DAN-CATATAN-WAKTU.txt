@@ -1,0 +1,10 @@
+PERBAIKAN TERBARU
+
+1. Memperbaiki error: programCards is not defined.
+2. Menu Program Latihan dapat dibuka oleh Admin, Pelatih, dan Orang Tua.
+3. Program latihan ditampilkan dalam kartu berisi judul, kategori, KU, durasi, total meter, detail, gambar, dan tautan video.
+4. Admin dan Pelatih dapat menghapus program latihan.
+5. Menambahkan tombol Edit pada Catatan Waktu untuk Admin dan Pelatih.
+6. Form Edit Catatan Waktu memuat data lama dan menyimpan perubahan ke data yang sama.
+7. Tombol Tambah Catatan Waktu kembali membuka form kosong.
+8. Validasi format waktu tetap mendukung MM:SS.CC dan MM.SS.CC.

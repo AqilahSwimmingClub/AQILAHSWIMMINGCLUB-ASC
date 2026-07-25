@@ -1,0 +1,10 @@
+TAHAP PROGRAM LATIHAN, CATATAN WAKTU, DAN GRAFIK PERKEMBANGAN
+
+- Program latihan dapat ditambah, diedit, dan dihapus oleh Admin/Pelatih.
+- Foto program lama tetap tersimpan ketika edit tanpa memilih foto baru.
+- Catatan waktu dapat ditambah, diedit, dan dihapus.
+- Filter atlet untuk melihat grafik perkembangan waktu.
+- Grafik menampilkan delapan catatan terakhir.
+- Personal Best dihitung otomatis per gaya dan jarak.
+- Orang tua dapat melihat grafik perkembangan dan personal best anak.
+- Tampilan responsif untuk laptop, tablet, dan HP.

@@ -1,0 +1,21 @@
+TAHAP BERIKUTNYA — SIAP GITHUB DAN VERCEL
+
+Versi ini sudah disiapkan untuk:
+1. Pengujian laptop dan HP pada satu Wi-Fi.
+2. Build produksi dengan npm run build.
+3. Upload ke GitHub.
+4. Deploy ke Vercel.
+5. Sinkronisasi dua arah melalui Supabase.
+
+Perintah lokal:
+npm install
+npm run dev -- --host
+
+Pemeriksaan produksi:
+npm run build
+npm run preview -- --host
+
+Variabel lingkungan Vercel:
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+VITE_CLUB_ID

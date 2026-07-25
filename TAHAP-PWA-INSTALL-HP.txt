@@ -1,0 +1,12 @@
+TAHAP PWA SIAP DIPASANG DI HP
+
+Perubahan:
+1. Manifest PWA dilengkapi dengan ikon 192x192, 512x512, dan maskable.
+2. Tombol "Pasang Aplikasi" otomatis muncul pada browser Android yang mendukung instalasi.
+3. Service worker diperbarui agar build produksi dapat dibuka lebih baik saat koneksi terputus.
+4. Service worker tetap tidak mengganggu localhost atau alamat IP jaringan saat development.
+5. Metadata Apple/iPad ditambahkan untuk Add to Home Screen.
+
+Setelah push ke GitHub dan Vercel selesai deploy:
+- Android/Chrome: buka website lalu tekan tombol Pasang Aplikasi.
+- iPad/iPhone/Safari: Bagikan > Tambahkan ke Layar Utama.

@@ -1,0 +1,8 @@
+VERSI SUPABASE - AQILAH SWIMMING CLUB
+
+- Firebase telah dihapus dari source code dan package.json.
+- Penyimpanan menggunakan tabel public.class_app_data di Supabase.
+- Tambah, edit, hapus, reset akun, absensi, catatan waktu, lomba dan pembayaran memakai data yang sama.
+- Sinkronisasi realtime aktif melalui Supabase Realtime.
+- Data tetap disimpan lokal terlebih dahulu agar perubahan tidak hilang saat internet terputus.
+- Jalankan isi file SUPABASE-SETUP.sql satu kali di Supabase SQL Editor.

@@ -1,0 +1,6 @@
+PERBAIKAN TOMBOL KELUAR TABLET/HP
+
+- Sidebar memakai tiga area tetap: logo, daftar menu yang dapat digulir, dan tombol Keluar.
+- Tombol Keluar selalu berada di bagian bawah layar dan tidak ikut tersembunyi saat daftar menu panjang.
+- Mendukung tinggi viewport dinamis (100dvh) dan safe-area perangkat.
+- Tata letak tablet landscape dirapikan agar seluruh menu tetap mudah digunakan.

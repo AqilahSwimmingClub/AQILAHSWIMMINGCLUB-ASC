@@ -1,0 +1,17 @@
+PERBAIKAN AQILAH SWIMMING CLUB
+23 Juli 2026
+
+1. Tombol Simpan dan Tampilkan pada Tambah Event diperbaiki.
+2. Error addNotification is not defined diperbaiki.
+3. Berkas pendaftar baru sekarang dipreview terlebih dahulu, lalu dapat didownload.
+4. Bukti pembayaran gaji dapat dipreview oleh Admin dan Pelatih.
+5. Upload bukti gaji mendukung gambar dan PDF.
+6. Program Latihan Admin dan Pelatih dapat dibuka dan disimpan.
+7. Catatan Waktu menerima format MM:SS.CC atau MM.SS.CC.
+8. Pengumuman dilengkapi tombol Edit dan Hapus.
+9. Tombol Keluar Admin, Pelatih, dan Orang Tua diperbaiki.
+10. Login awal Orang Tua tetap menggunakan ID Atlet sebagai username dan password.
+11. Password baru Orang Tua tetap aktif setelah berhasil diganti.
+12. Jadwal Orang Tua dibuat hanya-baca; hanya jadwal Admin/Pelatih yang ditampilkan.
+13. Menu Orang Tua "Daftar Perlombaan" mengirim data pendaftaran ke Admin.
+14. Favicon menggunakan logo klub sehingga error favicon 404 tidak muncul.

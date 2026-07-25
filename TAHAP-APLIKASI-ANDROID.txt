@@ -1,0 +1,12 @@
+TAHAP APLIKASI ANDROID SELESAI
+
+Fitur yang ditambahkan:
+1. Integrasi Capacitor Android.
+2. Identitas aplikasi: com.aqilahswimmingclub.app.
+3. Perintah build dan sinkronisasi Android pada package.json.
+4. GitHub Actions untuk menghasilkan APK otomatis.
+5. Artifact APK bernama AQILAH-SWIMMING-CLUB.apk.
+6. Panduan penggunaan GitHub Actions dan Android Studio.
+
+Project ini tetap merupakan project utama yang sama untuk website, PWA, dan Android.
+Tidak perlu membuat repository baru.

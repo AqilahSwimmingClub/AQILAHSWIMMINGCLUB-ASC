@@ -1,0 +1,12 @@
+PERBAIKAN FORM TIBA-TIBA TERTUTUP
+
+Versi ini memperbaiki form/modal yang sebelumnya tertutup atau kembali kosong secara tiba-tiba ketika sinkronisasi Supabase melakukan pembaruan halaman.
+
+Diperbaiki pada:
+- Tambah/Edit Catatan Waktu
+- Input Perkembangan Atlet
+- Tambah Pelatih
+- Tambah/Edit Data Atlet
+- Dialog/form lain di aplikasi
+
+Pembaruan dari HP/website tetap diterima, tetapi tampilan tidak dibangun ulang selama pengguna sedang mengetik atau dialog masih terbuka. Pembaruan tampilan diterapkan setelah form/dialog ditutup.

@@ -1,0 +1,6 @@
+TAHAP KEUANGAN DAN LAPORAN
+- Ringkasan pembayaran diterima, menunggu, tagihan, dan gaji pelatih.
+- Preview bukti pembayaran sebelum download.
+- Export Excel pembayaran SPP/lomba.
+- Export Excel tagihan atlet.
+- Export Excel riwayat gaji pelatih.

@@ -1,0 +1,15 @@
+TAHAP PENDAFTARAN ATLET BARU
+
+Perubahan:
+- Form pendaftar baru dilengkapi nomor WhatsApp orang tua.
+- Setiap pendaftaran memperoleh kode REG unik.
+- Pendaftar dapat mengecek status menggunakan kode pendaftaran.
+- Admin dapat mengedit data pendaftar sebelum menyetujui.
+- Admin dapat memberi alasan penolakan.
+- Status menampilkan ID atlet setelah disetujui.
+- Dokumen Akta dan Bukti Pembayaran tetap dapat dipreview dan diunduh.
+- Saat disetujui, data otomatis masuk ke Data Atlet dan memakai ID kosong terkecil.
+- Akun orang tua memakai ID Atlet sebagai password awal.
+
+Commit yang disarankan:
+feat: finalisasi pendaftaran atlet baru dan verifikasi admin

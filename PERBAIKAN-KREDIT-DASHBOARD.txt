@@ -1,0 +1,12 @@
+PERBAIKAN KREDIT DASHBOARD
+
+Teks yang ditambahkan:
+Dashboard didesain oleh FAHMI DJAWAS. © 2026 Semua hak dilindungi
+
+Lokasi:
+- Paling bawah dashboard Admin
+- Paling bawah dashboard Pelatih
+- Paling bawah dashboard Orang Tua
+- Bagian bawah formulir Pendaftar Baru
+
+Tampilan dibuat responsif untuk komputer dan HP.

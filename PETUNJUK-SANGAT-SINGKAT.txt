@@ -1,0 +1,17 @@
+AQILAH SWIMMING CLUB - CARA PALING MUDAH
+
+1. Ekstrak ZIP ini.
+2. Buka folder aqilah_android_ready.
+3. Klik dua kali SIAPKAN-ANDROID-OTOMATIS.bat.
+4. Tunggu sampai Android Studio terbuka.
+
+File tersebut otomatis menjalankan:
+- npm install
+- npm run build
+- npx cap add android (hanya jika folder Android belum ada)
+- pengaturan minimum Android
+- npx cap sync android
+- npx cap open android
+
+Setelah ada perubahan kode, cukup klik dua kali:
+UPDATE-ANDROID-SETELAH-EDIT.bat

@@ -1,0 +1,14 @@
+TAHAP HAPUS OTOMATIS DATA PEMBAYARAN LOMBA
+
+Perubahan:
+1. Data pembayaran lomba otomatis dibersihkan setelah melewati 7 hari dari tanggal batas/penutupan pendaftaran event.
+2. Bukti pembayaran lomba pada pendaftaran event ikut dihapus.
+3. Riwayat peserta dan nomor lomba tetap dipertahankan agar data pendaftaran atlet tidak hilang.
+4. Pembayaran lomba pada menu Pembayaran umum yang terhubung dengan nama event juga ikut dihapus.
+5. Pembersihan dijalankan saat aplikasi dibuka, setelah data Supabase dimuat, dan setiap satu jam selama aplikasi terbuka.
+6. Hasil pembersihan otomatis disimpan kembali dan disinkronkan ke Supabase.
+
+Contoh:
+Batas pendaftaran: 1 Agustus 2026
+Data pembayaran tersimpan sampai: 8 Agustus 2026 pukul 23.59
+Mulai 9 Agustus 2026, data dan bukti pembayaran lomba otomatis dihapus.

@@ -1,0 +1,15 @@
+AQILAH SWIMMING CLUB — PERBAIKAN PENYIMPANAN DATA
+
+1. Tambah atlet, edit atlet, hapus atlet, dan reset akun orang tua langsung diterima dan disimpan.
+2. Semua perubahan disimpan terlebih dahulu di perangkat agar tidak hilang walaupun internet terputus.
+3. Sinkronisasi daring berjalan otomatis dan mencoba kembali ketika koneksi tersedia.
+4. Tidak ada lagi tulisan "Akses Firebase ditolak" pada aplikasi.
+5. Disertakan firestore.rules agar Admin, Pelatih, dan Orang Tua dapat membaca serta menyimpan data bersama.
+6. Fitur yang sudah benar tidak diubah.
+
+PENTING UNTUK SINKRONISASI ANTARPERANGKAT:
+Terapkan file firestore.rules ke proyek Firebase yang digunakan aplikasi. Jalankan:
+
+firebase deploy --only firestore:rules
+
+Atau salin isi firestore.rules ke Firebase Console > Firestore Database > Rules lalu Publish.

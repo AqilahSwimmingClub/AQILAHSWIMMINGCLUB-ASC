@@ -1,0 +1,17 @@
+PERBAIKAN SINKRONISASI HP DAN WEBSITE
+Tanggal: 23 Juli 2026
+
+Perbaikan:
+1. Perubahan selalu disimpan ke perangkat terlebih dahulu agar tidak hilang ketika internet lambat atau terputus.
+2. Data otomatis dikirim ke Supabase setelah perubahan dilakukan.
+3. Supabase Realtime menerima perubahan dari HP ke website dan dari website ke HP.
+4. Ditambahkan pemeriksaan cadangan setiap 15 detik jika koneksi Realtime terputus oleh Wi-Fi/operator.
+5. Saat aplikasi kembali dibuka dari latar belakang, data terbaru otomatis diperiksa.
+6. Perubahan lokal yang belum terkirim tidak akan ditimpa oleh unduhan data lama.
+7. Status sinkronisasi tampil di bagian atas dashboard.
+8. Jika internet kembali tersambung, perubahan offline otomatis dikirim.
+
+PENTING:
+- Jalankan SUPABASE-SETUP.sql satu kali pada SQL Editor Supabase.
+- Website yang dibuka dari HP dan komputer harus menggunakan project Supabase dan CLUB_ID yang sama.
+- Untuk pemakaian antarperangkat dari mana saja, deploy website ke Vercel. localhost hanya dapat dipakai dalam jaringan lokal.

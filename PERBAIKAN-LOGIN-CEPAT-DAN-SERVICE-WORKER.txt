@@ -1,0 +1,7 @@
+PERBAIKAN LOGIN CEPAT DAN SERVICE WORKER
+
+1. Halaman login sekarang dirender langsung dari data lokal tanpa menunggu Supabase.
+2. Sinkronisasi Supabase berjalan di belakang layar.
+3. Service worker tidak lagi mengintersep /@vite/client dan /src/main.js pada localhost.
+4. Service worker lama dan cache PWA otomatis dibersihkan ketika menjalankan npm run dev.
+5. Service worker produksi memakai network-first untuk navigasi dan fallback cache yang aman.

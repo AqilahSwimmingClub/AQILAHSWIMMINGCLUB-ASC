@@ -1,0 +1,27 @@
+AQILAH SWIMMING CLUB — PROJECT ANDROID 10 KE ATAS
+
+PERBAIKAN UTAMA
+- Konfigurasi memakai capacitor.config.json agar appId terbaca oleh Capacitor.
+- appId: com.aqilahswimmingclub.app
+- appName: AQILAH Swimming Club
+- webDir: dist
+- Minimum Android: API 29 (Android 10)
+
+BUKA CMD DI FOLDER YANG BERISI package.json, lalu jalankan:
+
+npm install
+npm run android:setup
+npx cap open android
+
+Perintah android:setup otomatis:
+1. membangun website;
+2. membuat folder android;
+3. mengatur minSdkVersion 29;
+4. menyinkronkan hasil build ke Android.
+
+UNTUK PEMBARUAN BERIKUTNYA (setelah folder android sudah ada):
+
+npm run android:update
+npx cap open android
+
+JANGAN jalankan npx cap add android lagi jika folder android sudah tersedia.

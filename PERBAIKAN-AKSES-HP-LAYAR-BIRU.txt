@@ -1,0 +1,6 @@
+PERBAIKAN AKSES HP - LAYAR BIRU
+
+1. Mengganti crypto.randomUUID() dengan generator UUID yang kompatibel pada HTTP alamat IP lokal.
+2. Menghapus service worker dan cache lama pada semua koneksi HTTP development, termasuk 192.168.x.x.
+3. Menambahkan tampilan pesan jika JavaScript gagal dimuat agar tidak hanya terlihat layar biru kosong.
+4. Akses HP tetap menggunakan npm run dev -- --host 0.0.0.0.

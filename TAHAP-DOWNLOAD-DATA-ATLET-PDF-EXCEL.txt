@@ -1,0 +1,8 @@
+PERUBAHAN DOWNLOAD DATA ATLET
+
+1. Menu Data Atlet memiliki tombol Download PDF dan Download Excel.
+2. Format Excel mengikuti template yang diberikan:
+   NO, ID - ATLET, NAMA, JK, TANGGAL LAHIR, UMUR, KU, KATEGORI.
+3. File diurutkan berdasarkan ID Atlet.
+4. PDF dibuat dalam format A4 landscape agar mudah dibaca dan dikirim ke orang tua.
+5. Karena ada library baru, jalankan npm install satu kali setelah mengganti project.

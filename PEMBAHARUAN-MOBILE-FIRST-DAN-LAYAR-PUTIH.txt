@@ -1,0 +1,21 @@
+PEMBAHARUAN MOBILE-FIRST + PERBAIKAN LAYAR PUTIH
+
+Perubahan utama:
+1. Navigasi bawah (bottom navigation) untuk HP.
+2. Sidebar menjadi menu tambahan dan otomatis menutup.
+3. Dashboard satu kolom pada HP.
+4. Tabel otomatis berubah menjadi kartu.
+5. Form, tombol, dialog, dan popup menyesuaikan layar.
+6. Ukuran sentuh minimum 44 px.
+7. Safe-area bawah untuk perangkat Android modern.
+8. Vite base diubah menjadi ./ agar aset Android tidak blank putih.
+9. Folder android tetap tersedia dan siap dibuka di Android Studio.
+
+CARA BUILD:
+- Ekstrak ZIP.
+- Buka folder aqilah_android_ready/android di Android Studio.
+- Tunggu Gradle Sync.
+- Build > Build Bundle(s) / APK(s) > Build APK(s).
+
+Catatan:
+Build pertama membutuhkan internet untuk npm dan Gradle.
