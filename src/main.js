@@ -945,11 +945,31 @@ function parentPaymentPage(){
 }
 
 
-function downloadXmlExcel(filename,sheetName,headers,rows){
+
+
+function blobToBase64(blob){
+ return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||'').split(',')[1]||'');reader.onerror=()=>reject(reader.error||new Error('File tidak dapat dibaca.'));reader.readAsDataURL(blob)})
+}
+async function saveDownloadFile(blob,filename,mimeType='application/octet-stream'){
+ try{
+  if(window.AndroidDownloads&&typeof window.AndroidDownloads.saveBase64File==='function'){
+   const base64=await blobToBase64(blob)
+   window.AndroidDownloads.saveBase64File(filename,mimeType||blob.type||'application/octet-stream',base64)
+   alert(`File ${filename} berhasil disimpan ke folder Download.`)
+   return true
+  }
+  const url=URL.createObjectURL(blob),a=document.createElement('a')
+  a.href=url;a.download=filename;a.style.display='none';document.body.appendChild(a);a.click();a.remove()
+  setTimeout(()=>URL.revokeObjectURL(url),1500)
+  return true
+ }catch(error){console.error(error);alert(`Download gagal: ${error?.message||'Tidak dapat menyimpan file.'}`);return false}
+}
+
+async function downloadXmlExcel(filename,sheetName,headers,rows){
  const safe=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;')
  const xml=`<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="${safe(sheetName)}"><Table>${[headers,...rows].map(row=>`<Row>${row.map(value=>`<Cell><Data ss:Type="${typeof value==='number'?'Number':'String'}">${safe(value)}</Data></Cell>`).join('')}</Row>`).join('')}</Table></Worksheet></Workbook>`
  const blob=new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8'})
- const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)
+ await saveDownloadFile(blob,filename,'application/vnd.ms-excel')
 }
 function financeSummaryCards(){
  const approved=state.payments.filter(p=>p.status==='approved').reduce((n,p)=>n+Number(p.amount||0),0)
@@ -1121,7 +1141,9 @@ function downloadAthletesExcel(){
  }
  const wb=XLSX.utils.book_new()
  XLSX.utils.book_append_sheet(wb,ws,'Data Atlet')
- XLSX.writeFile(wb,safeExportFilename('xlsx'))
+ const array=XLSX.write(wb,{bookType:'xlsx',type:'array'})
+ const blob=new Blob([array],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})
+ saveDownloadFile(blob,safeExportFilename('xlsx'),blob.type)
 }
 function downloadAthletesPdf(){
  const rows=athleteExportRows().map(r=>[r[0],r[1],r[2],r[3],r[4],`${r[5]} tahun`,r[6],r[7]])
@@ -1145,7 +1167,8 @@ function downloadAthletesPdf(){
    doc.setFontSize(7);doc.text(`Halaman ${page}`,285,202,{align:'right'})
   }
  })
- doc.save(safeExportFilename('pdf'))
+ const blob=doc.output('blob')
+ saveDownloadFile(blob,safeExportFilename('pdf'),'application/pdf')
 }
 
 function athleteTable(){
@@ -1226,7 +1249,7 @@ function bindEvents(){
    const xml=`<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Pendaftaran Lomba"><Table>${[headers,...rows].map((row,rowIndex)=>`<Row>${row.map(value=>`<Cell><Data ss:Type="${typeof value==='number'?'Number':'String'}">${escapeXml(value)}</Data></Cell>`).join('')}</Row>`).join('')}</Table></Worksheet></Workbook>`
    const blob=new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8'})
    const eventNames=[...new Set(registrations.map(r=>r.competitionTitle).filter(Boolean))],safeName=(eventNames.length===1?eventNames[0]:'Semua Event').replace(/[\/:*?"<>|]+/g,'-').slice(0,60)
-   const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`Pendaftaran-Lomba-${safeName}.xls`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)
+   saveDownloadFile(blob,`Pendaftaran-Lomba-${safeName}.xls`,'application/vnd.ms-excel')
  })
  document.querySelectorAll('[data-preview-competition-proof]').forEach(b=>b.onclick=()=>{const record=state.competitionRegistrations.find(r=>r.id===b.dataset.previewCompetitionProof);if(!record?.proof)return alert('Bukti pembayaran tidak tersedia.');const dialog=document.querySelector('#competitionProofPreviewDialog'),content=document.querySelector('#competitionProofPreviewContent'),link=document.querySelector('#competitionProofDownloadLink'),meta=document.querySelector('#competitionProofPreviewMeta');const proof=record.proof,isPdf=/^data:application\/pdf/i.test(proof)||/\.pdf(?:$|[?#])/i.test(proof);content.innerHTML=isPdf?`<iframe src="${proof}" title="Bukti pembayaran ${esc(record.athleteName)}"></iframe>`:`<img src="${proof}" alt="Bukti pembayaran ${esc(record.athleteName)}">`;meta.textContent=`${record.athleteName} — ${record.competitionTitle}`;link.href=proof;link.download=`Bukti-Pembayaran-${String(record.athleteName||'Atlet').replace(/[^A-Za-z0-9_-]+/g,'-')}`;dialog?.showModal()})
  const navigateToPage=(page)=>{

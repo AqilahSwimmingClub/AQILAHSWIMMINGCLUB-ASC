@@ -1,0 +1,20 @@
+PERBAIKAN UPLOAD ANDROID HP & TABLET
+====================================
+
+Perubahan utama:
+1. Menambahkan dukungan pemilih file Android pada WebView melalui onShowFileChooser.
+2. Tombol input file sekarang dapat membuka galeri/pengelola dokumen pada HP dan tablet.
+3. Mendukung foto, PDF, dan pilihan beberapa file jika halaman memerlukannya.
+4. Mengaktifkan akses content:// agar file pilihan Android dapat dibaca dan diunggah ke Supabase Storage.
+5. Tidak memerlukan izin penyimpanan manual karena memakai Android Storage Access Framework.
+6. Tetap kompatibel dengan Android 10 dan versi yang lebih baru.
+
+Cara memperbarui aplikasi Android:
+1. Buka CMD pada folder proyek ini.
+2. Jalankan: npm install
+3. Jalankan: npm run android:update
+4. Buka folder android di Android Studio.
+5. Pilih Build > Build APK(s).
+
+Catatan Supabase:
+Pastikan SQL pada SUPABASE-SETUP.sql sudah dijalankan dan bucket asc-uploads tersedia.

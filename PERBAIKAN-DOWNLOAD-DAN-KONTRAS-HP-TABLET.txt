@@ -1,0 +1,13 @@
+AQILAH Swimming Club v3.0.1
+
+Perbaikan:
+1. Teks pada kartu tabel HP/tablet dibuat gelap dan mudah dibaca.
+2. Download PDF dan Excel memakai Android MediaStore.
+3. File tersimpan di Download/AQILAH-Swimming-Club.
+4. Website tetap memakai mekanisme download browser.
+5. Upload Android yang sudah diperbaiki tetap dipertahankan.
+
+Build ulang:
+npm install
+npm run android:update
+Buka folder android di Android Studio lalu Build APK.
