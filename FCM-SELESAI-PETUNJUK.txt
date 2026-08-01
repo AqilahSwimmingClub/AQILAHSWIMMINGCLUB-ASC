@@ -1,0 +1,20 @@
+PERBAIKAN FCM SUDAH DITAMBAHKAN
+
+Yang ditambahkan:
+1. Token HP disimpan ke payload Supabase pada pushDevices.
+2. Edge Function supabase/functions/send-push/index.ts.
+3. Push otomatis untuk pendaftar baru, pembayaran, pengumuman, program latihan, catatan waktu, konfirmasi pembayaran, dan gaji pelatih.
+
+JALANKAN DI CMD FOLDER UTAMA PROJECT:
+
+npm run build
+npx cap sync android
+npx supabase functions deploy send-push --no-verify-jwt
+
+Pastikan secret berikut sudah ada di Supabase:
+FIREBASE_PROJECT_ID
+FIREBASE_CLIENT_EMAIL
+FIREBASE_PRIVATE_KEY
+
+Setelah APK dijalankan, login pada setiap HP sesuai perannya agar token perangkat tersimpan.
+Jangan menghapus aplikasi saat pengujian.

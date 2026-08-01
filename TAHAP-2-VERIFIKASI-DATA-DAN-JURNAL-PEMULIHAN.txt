@@ -1,0 +1,20 @@
+AQILAH SWIMMING CLUB - TAHAP 2
+VERIFIKASI DATA DAN JURNAL PEMULIHAN
+
+Perbaikan yang sudah dimasukkan:
+1. Sesudah menyimpan ke Supabase, aplikasi memeriksa ulang ID data penting.
+2. Status "sudah tersinkron" hanya muncul bila data berikut kembali lengkap:
+   - Data atlet
+   - Pendaftar baru
+   - Catatan waktu
+   - Pembayaran SPP dan lomba
+   - Pendaftaran lomba
+   - Gaji pelatih
+   - Data kompetisi
+3. Bila verifikasi gagal, aplikasi tidak menganggap simpan berhasil dan mencoba ulang.
+4. Sebelum dan sesudah penyimpanan dibuat jurnal pemulihan lokal maksimal 100 kejadian.
+5. Snapshot pengaman lokal tetap dipertahankan.
+
+Catatan:
+- Tahap ini tidak perlu diunggah ke GitHub dahulu.
+- Semua perubahan disimpan pada satu proyek utama sampai versi final.
