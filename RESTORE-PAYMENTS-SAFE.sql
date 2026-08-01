@@ -1,0 +1,13 @@
+create table if not exists public.asc_payments (legacy_id text primary key, payment_type text, amount numeric, payment_date date, status text, proof_url text, notes text, data jsonb not null default '{}'::jsonb, deleted_at timestamptz, updated_at timestamptz not null default now());
+alter table public.asc_payments enable row level security;
+do $$ begin
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_payments' and policyname='ASC payments read') then create policy "ASC payments read" on public.asc_payments for select to anon,authenticated using(true); end if;
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_payments' and policyname='ASC payments insert') then create policy "ASC payments insert" on public.asc_payments for insert to anon,authenticated with check(true); end if;
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_payments' and policyname='ASC payments update') then create policy "ASC payments update" on public.asc_payments for update to anon,authenticated using(true) with check(true); end if;
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_payments' and policyname='ASC payments delete') then create policy "ASC payments delete" on public.asc_payments for delete to anon,authenticated using(true); end if;
+end $$;
+do $$ declare p jsonb; begin
+ if to_regclass('public.class_app_data_backup') is not null then execute 'select payload from public.class_app_data_backup where class_id=$1 and jsonb_array_length(coalesce(payload->''payments'',''[]''::jsonb))>0 limit 1' into p using 'aqilah-swimming-club'; end if;
+ if p is null then select payload into p from public.class_app_data where class_id='aqilah-swimming-club' and jsonb_array_length(coalesce(payload->'payments','[]'::jsonb))>0 limit 1; end if;
+ insert into public.asc_payments(legacy_id,payment_type,amount,payment_date,status,proof_url,notes,data,deleted_at,updated_at) select x->>'id',coalesce(nullif(x->>'paymentType',''),nullif(x->>'type','')),case when x->>'amount' ~ '^\d+(\.\d+)?$' then (x->>'amount')::numeric end,case when coalesce(x->>'date',x->>'paymentDate') ~ '^\d{4}-\d{2}-\d{2}$' then coalesce(x->>'date',x->>'paymentDate')::date end,nullif(x->>'status',''),coalesce(nullif(x->>'proof',''),nullif(x->>'proofUrl',''),nullif(x->>'paymentProof','')),coalesce(nullif(x->>'note',''),nullif(x->>'notes','')),x,null,now() from jsonb_array_elements(coalesce(p->'payments','[]'::jsonb)) x where nullif(x->>'id','') is not null on conflict(legacy_id) do nothing;
+end $$;

@@ -63,28 +63,48 @@ Deno.serve(async (req) => {
     if (!supabaseUrl || !serviceRole || !projectId || !clientEmail || !privateKey) throw new Error("Secret Supabase/Firebase belum lengkap.");
 
     const supabase = createClient(supabaseUrl, serviceRole);
-    const { data, error } = await supabase.from("class_app_data").select("payload").eq("class_id", clubId).maybeSingle();
+    const { data, error } = await supabase.from("asc_push_devices")
+      .select("device_id,athlete_id,parent_id,coach_id,role,platform,fcm_token,last_seen")
+      .not("fcm_token", "is", null);
     if (error) throw error;
-    const devices = Array.isArray(data?.payload?.pushDevices) ? data.payload.pushDevices : [];
+    const devices = Array.isArray(data) ? data : [];
+    let targetAthleteId = athleteId;
+    let targetCoachId = coachId;
+    if (athleteId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(athleteId)) {
+      const { data: athlete, error: athleteError } = await supabase.from("asc_athletes").select("id").eq("legacy_id", athleteId).maybeSingle();
+      if (athleteError) throw athleteError;
+      targetAthleteId = String(athlete?.id || "");
+    }
+    if (coachId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(coachId)) {
+      const { data: coach, error: coachError } = await supabase.from("asc_coaches").select("id").eq("legacy_id", coachId).maybeSingle();
+      if (coachError) throw coachError;
+      targetCoachId = String(coach?.id || "");
+    }
     const filtered = devices.filter((d: Record<string, string>) => {
-      if (!d?.token) return false;
+      if (!d?.fcm_token) return false;
       if (target === "all") return true;
       if (target === "admin") return d.role === "admin";
-      if (target === "parent") return d.role === "parent" && (!athleteId || d.athleteId === athleteId);
-      if (target === "coach") return d.role === "coach" && (!coachId || d.coachId === coachId);
+      if (target === "parent") return d.role === "parent" && (!athleteId || d.athlete_id === targetAthleteId || d.parent_id === targetAthleteId);
+      if (target === "coach") return d.role === "coach" && (!coachId || d.coach_id === targetCoachId);
       return false;
     });
-    const tokens = [...new Set(filtered.map((d: Record<string, string>) => d.token))];
-    if (!tokens.length) return new Response(JSON.stringify({ ok: true, sent: 0, message: "Belum ada perangkat tujuan yang terdaftar." }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const uniqueDevices = [...new Map(filtered.map((d: Record<string, string>) => [d.fcm_token, d])).values()];
+    if (!uniqueDevices.length) return new Response(JSON.stringify({ ok: true, sent: 0, message: "Belum ada perangkat tujuan yang terdaftar." }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
     const accessToken = await getAccessToken(projectId, clientEmail, privateKey);
-    const results = await Promise.all(tokens.map(async (token) => {
+    const results = await Promise.all(uniqueDevices.map(async (device: Record<string, string>) => {
+      const token = device.fcm_token;
       const response = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
         method: "POST",
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({ message: { token, notification: { title, body: message }, data: { title, message, page, eventId }, android: { priority: "high", notification: { channel_id: "aqilah_notifications" } } } }),
       });
-      return { token: String(token).slice(0, 12), ok: response.ok, detail: response.ok ? await response.json() : await response.text() };
+      const detail = response.ok ? await response.json() : await response.text();
+      if (!response.ok && /UNREGISTERED|registration-token-not-registered|INVALID_ARGUMENT/i.test(String(detail))) {
+        const { error: deactivateError } = await supabase.from("asc_push_devices").update({ fcm_token: null, deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("device_id", device.device_id);
+        if (deactivateError) console.error("Token FCM invalid gagal dinonaktifkan:", deactivateError);
+      }
+      return { deviceId: device.device_id, token: String(token).slice(0, 12), ok: response.ok, detail };
     }));
     return new Response(JSON.stringify({ ok: true, sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length, results }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (error) {
