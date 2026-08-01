@@ -1,0 +1,14 @@
+create table if not exists public.asc_time_records (legacy_id text primary key, stroke text, distance numeric, record_type text, event_level text, recorded_at date, time_value text, notes text, data jsonb not null default '{}'::jsonb, deleted_at timestamptz, updated_at timestamptz not null default now());
+alter table public.asc_time_records enable row level security;
+do $$ begin
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_time_records' and policyname='ASC time records read') then create policy "ASC time records read" on public.asc_time_records for select to anon,authenticated using(true); end if;
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_time_records' and policyname='ASC time records insert') then create policy "ASC time records insert" on public.asc_time_records for insert to anon,authenticated with check(true); end if;
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_time_records' and policyname='ASC time records update') then create policy "ASC time records update" on public.asc_time_records for update to anon,authenticated using(true) with check(true); end if;
+ if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_time_records' and policyname='ASC time records delete') then create policy "ASC time records delete" on public.asc_time_records for delete to anon,authenticated using(true); end if;
+end $$;
+do $$ declare p jsonb; begin
+ if to_regclass('public.class_app_data_backup') is not null then execute 'select payload from public.class_app_data_backup where class_id=$1 and jsonb_array_length(coalesce(payload->''timeRecords'',''[]''::jsonb))>0 limit 1' into p using 'aqilah-swimming-club'; end if;
+ if p is null then select payload into p from public.class_app_data where class_id='aqilah-swimming-club' and jsonb_array_length(coalesce(payload->'timeRecords','[]'::jsonb))>0 limit 1; end if;
+ insert into public.asc_time_records(legacy_id,stroke,distance,record_type,event_level,recorded_at,time_value,notes,data,deleted_at,updated_at)
+ select x->>'id',nullif(x->>'stroke',''),case when x->>'distance' ~ '^\d+(\.\d+)?$' then (x->>'distance')::numeric end,nullif(x->>'type',''),nullif(x->>'level',''),case when x->>'date' ~ '^\d{4}-\d{2}-\d{2}$' then (x->>'date')::date end,nullif(x->>'time',''),coalesce(nullif(x->>'note',''),nullif(x->>'notes','')),x,null,now() from jsonb_array_elements(coalesce(p->'timeRecords','[]'::jsonb)) x where nullif(x->>'id','') is not null on conflict(legacy_id) do nothing;
+end $$;

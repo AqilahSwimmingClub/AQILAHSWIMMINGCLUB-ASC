@@ -1,0 +1,20 @@
+PERBAIKAN PENYIMPANAN AQILAH SWIMMING CLUB
+
+Versi ini menggunakan penyimpanan per baris Supabase untuk:
+- Data Atlet -> asc_athletes
+- Absensi -> asc_attendance
+- Pembayaran -> asc_payments
+- Program Latihan -> asc_training_programs
+- Catatan Waktu -> asc_time_records
+- Pengumuman -> asc_announcements
+
+class_app_data tetap dipertahankan untuk modul lain dan sebagai kompatibilitas/backup.
+Keenam koleksi di atas selalu dibaca dari tabel asc_* sehingga input berbeda yang dilakukan bersamaan tidak lagi menulis ulang satu payload besar.
+
+Data lama tidak dihapus.
+
+Cara uji di Windows:
+1. Buka CMD di folder proyek.
+2. Jalankan npm install
+3. Jalankan npm run build
+4. Jalankan npm run dev
