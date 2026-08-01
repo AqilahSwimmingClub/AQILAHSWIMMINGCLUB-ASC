@@ -1,23 +1,29 @@
 {
-  "name": "functions",
-  "description": "Cloud Functions for Firebase",
+  "name": "aqilah-swimming-club",
+  "private": true,
+  "version": "3.0.1-mobile-export-fix",
+  "type": "module",
   "scripts": {
-    "serve": "firebase emulators:start --only functions",
-    "shell": "firebase functions:shell",
-    "start": "npm run shell",
-    "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "android:add": "npx cap add android",
+    "android:sync": "npm run build && npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "android:setup": "npm run build && npx cap add android && node scripts/set-android-min-sdk.cjs && npx cap sync android",
+    "android:update": "npm run build && node scripts/set-android-min-sdk.cjs && npx cap sync android"
   },
-  "engines": {
-    "node": "22"
-  },
-  "main": "index.js",
   "dependencies": {
-    "firebase-admin": "^13.6.0",
-    "firebase-functions": "^7.0.0"
+    "@supabase/supabase-js": "^2.52.1",
+    "xlsx-js-style": "^1.2.0",
+    "jspdf": "^3.0.2",
+    "jspdf-autotable": "^5.0.2",
+    "@capacitor/core": "^7.4.3"
   },
   "devDependencies": {
-    "firebase-functions-test": "^3.4.1"
-  },
-  "private": true
+    "vite": "^5.4.0",
+    "@capacitor/cli": "^7.4.3",
+    "@capacitor/android": "^7.4.3"
+  }
 }

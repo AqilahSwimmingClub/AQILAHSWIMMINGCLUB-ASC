@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "80404893995",
+    "project_id": "aqilah-swimming-club",
+    "storage_bucket": "aqilah-swimming-club.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:80404893995:android:6d037b21a6d19c822df56e",
+        "android_client_info": {
+          "package_name": "com.aqilahswimmingclub.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCQhx3F-kDQPE3BXZ5PP4a-2zZa0E4mRNs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

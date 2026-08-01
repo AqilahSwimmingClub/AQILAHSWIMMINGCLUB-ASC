@@ -1,5 +1,6 @@
 plugins {
     id 'com.android.application'
+    id 'com.google.gms.google-services'
 }
 
 android {
@@ -26,26 +27,35 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'androidx.activity:activity:1.10.0'
+    implementation 'androidx.webkit:webkit:1.12.1'
+
+    implementation platform('com.google.firebase:firebase-bom:34.1.0')
+    implementation 'com.google.firebase:firebase-messaging'
 }
 
-// Saat tombol Build ditekan di Android Studio, web otomatis dibangun lalu
-// disalin ke aset Android. Folder aset lama dibersihkan agar APK tidak blank
-// karena masih memakai bundle versi sebelumnya.
 def projectRoot = rootProject.projectDir.parentFile
 def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
 
 tasks.register('installWebDependencies', Exec) {
     workingDir projectRoot
     onlyIf { !new File(projectRoot, 'node_modules').exists() }
-    if (isWindows) commandLine 'cmd', '/c', 'npm install'
-    else commandLine 'bash', '-lc', 'npm install'
+
+    if (isWindows) {
+        commandLine 'cmd', '/c', 'npm install'
+    } else {
+        commandLine 'bash', '-lc', 'npm install'
+    }
 }
 
 tasks.register('buildWeb', Exec) {
     dependsOn 'installWebDependencies'
     workingDir projectRoot
-    if (isWindows) commandLine 'cmd', '/c', 'npm run build'
-    else commandLine 'bash', '-lc', 'npm run build'
+
+    if (isWindows) {
+        commandLine 'cmd', '/c', 'npm run build'
+    } else {
+        commandLine 'bash', '-lc', 'npm run build'
+    }
 }
 
 tasks.register('cleanWebAssets', Delete) {

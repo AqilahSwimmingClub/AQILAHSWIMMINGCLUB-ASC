@@ -1,1 +1,41 @@
-<!doctype html><html><body style="font-family:sans-serif;background:#061d3b;color:white;display:grid;place-items:center;height:100vh"><p>Menyiapkan AQILAH Swimming Club…</p></body></html>
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b5ea8" />
+    <meta name="description" content="Aplikasi manajemen AQILAH Swimming Club" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="./icon-192.png" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="AQILAH ASC" />
+    <title>AQILAH Swimming Club</title>
+    <script>
+      // Pada HTTP lokal (localhost maupun alamat IP Wi-Fi), hapus service worker/cache lama
+      // agar modul Vite selalu dimuat langsung dari server pengembangan.
+      if (location.protocol === 'http:') {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(registrations =>
+            Promise.all(registrations.map(registration => registration.unregister()))
+          ).catch(() => {});
+        }
+        if ('caches' in window) {
+          caches.keys().then(keys => Promise.all(keys.map(key => caches.delete(key)))).catch(() => {});
+        }
+      }
+      window.addEventListener('error', function (event) {
+        const app = document.getElementById('app');
+        if (app && !app.innerHTML.trim()) {
+          app.innerHTML = '<div style="min-height:100vh;display:grid;place-items:center;background:#061d3b;color:white;padding:24px;font-family:Arial;text-align:center"><div><h2>Aplikasi gagal dimuat</h2><p>Silakan muat ulang halaman. Jika masih terjadi, periksa Console browser.</p><small>' + String(event.message || 'Kesalahan JavaScript') + '</small></div></div>';
+        }
+      });
+    </script>
+    <script type="module" crossorigin src="./assets/index-pHhpZJLs.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DzHtBJm1.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

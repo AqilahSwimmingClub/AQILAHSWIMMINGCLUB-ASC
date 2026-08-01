@@ -1,0 +1,19 @@
+PROYEK PEMULIHAN AQILAH SWIMMING CLUB
+
+Folder ini berasal dari versi stabil sebelum perubahan repository yang merusak Vercel.
+
+Untuk GitHub:
+1. Hapus isi repository yang rusak atau gunakan repository baru.
+2. Upload seluruh isi folder AQILAHSWIMMINGCLUB-ASC-main ini ke branch main.
+
+Untuk Vercel:
+- Framework Preset: Vite
+- Build Command: npm run build
+- Output Directory: dist
+
+Perintah lokal:
+npm install
+npm run build
+
+Jangan mengganti package.json dengan package Firebase Functions.
+Cloud Functions harus tetap berada di folder functions dengan package.json sendiri.

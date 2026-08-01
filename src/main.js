@@ -19,30 +19,6 @@ function createId(){
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://nykenupjktgmsotfzrjj.supabase.co'
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_iTBUQUsAGiqqKK16KTOmxw_aS7ochfu'
-
-
-// Jembatan FCM Android. Tidak mengubah data aplikasi yang sudah ada.
-let pendingNativePushToken = localStorage.getItem('asc_fcm_token') || ''
-window.ascReceiveNativePushToken = function ascReceiveNativePushToken(token) {
-  const value = String(token || '').trim()
-  if (!value) return
-  pendingNativePushToken = value
-  localStorage.setItem('asc_fcm_token', value)
-  window.dispatchEvent(new CustomEvent('asc:fcm-token', { detail: { token: value } }))
-  if (typeof window.ascRegisterCurrentPushDevice === 'function') {
-    window.ascRegisterCurrentPushDevice()
-  }
-}
-
-window.ascOpenPushDestination = function ascOpenPushDestination(page, eventId) {
-  const targetPage = String(page || '').trim()
-  if (eventId) localStorage.setItem('asc_last_push_event_id', String(eventId))
-  if (!targetPage) return
-  localStorage.setItem('asc_pending_push_page', targetPage)
-  window.dispatchEvent(new CustomEvent('asc:open-push', {
-    detail: { page: targetPage, eventId: String(eventId || '') }
-  }))
-}
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession:false, autoRefreshToken:false, detectSessionInUrl:false },
   realtime: { params:{ eventsPerSecond:5 } }
@@ -76,8 +52,7 @@ const defaultState = {
   invoices: [],
   coachSalaries: [],
   coachNotifications: [],
-  notifications: [],
-  pushDevices: []
+  notifications: []
 }
 
 let state = structuredClone(defaultState)
@@ -90,45 +65,6 @@ let currentPage = readSessionValue('asc_current_page') || 'dashboard'
 let role = readSessionValue('asc_role') || ''
 let parentAthleteId = readSessionValue('asc_parent_athlete') || ''
 let coachId = readSessionValue('asc_coach_id') || ''
-
-
-// Registrasi perangkat FCM dan pengiriman push melalui Supabase Edge Function.
-function currentPushIdentity(){
-  return {
-    role: role || '',
-    athleteId: role==='parent' ? parentAthleteId : '',
-    coachId: role==='coach' ? coachId : ''
-  }
-}
-function registerCurrentPushDevice(){
-  const token=String(pendingNativePushToken||localStorage.getItem('asc_fcm_token')||'').trim()
-  const identity=currentPushIdentity()
-  if(!token||!identity.role||!state||!Array.isArray(state.pushDevices))return false
-  const now=new Date().toISOString()
-  const existing=state.pushDevices.find(device=>device.token===token)
-  const same=existing&&existing.role===identity.role&&existing.athleteId===identity.athleteId&&existing.coachId===identity.coachId
-  const fresh=existing&&Date.now()-new Date(existing.updatedAt||0).getTime()<7*24*60*60*1000
-  if(same&&fresh)return true
-  const device={token,...identity,clientId:CLIENT_ID,platform:'android',updatedAt:now}
-  if(existing)Object.assign(existing,device)
-  else state.pushDevices.push(device)
-  queueSave()
-  return true
-}
-window.ascRegisterCurrentPushDevice=registerCurrentPushDevice
-window.addEventListener('asc:fcm-token',()=>registerCurrentPushDevice())
-
-async function sendPushNotification({target='all',athleteId='',coachId='',title='AQILAH Swimming Club',message='Ada informasi baru.',page='dashboard',eventId=''}={}){
-  try{
-    const {data,error}=await supabase.functions.invoke('send-push',{body:{clubId:CLUB_ID,target,athleteId,coachId,title,message,page,eventId}})
-    if(error)throw error
-    console.info('ASC_PUSH_SENT',data)
-    return data
-  }catch(error){
-    console.warn('Push notification belum terkirim.',error)
-    return null
-  }
-}
 function persistActiveSession(){
   const values={asc_role:role,asc_parent_athlete:parentAthleteId,asc_coach_id:coachId,asc_current_page:currentPage}
   Object.entries(values).forEach(([key,value])=>{
@@ -227,7 +163,6 @@ function normalize() {
   state.coachSalaries ||= []
   state.coachNotifications ||= []
   state.notifications ||= []
-  state.pushDevices ||= []
   state.auditTrail ||= []
   state.versionHistory ||= []
   state.__tombstones ||= {}
@@ -836,7 +771,6 @@ function loginPage() {
       state.pendingRegistrations.push(registration)
       addAdminNotification('registration','Pendaftar atlet baru',`${registration.name} mengirim formulir pendaftaran dan bukti pembayaran.`,'registrations')
       await commitCriticalRecord('pendingRegistrations',registration.id)
-      sendPushNotification({target:'admin',title:'Pendaftar Atlet Baru',message:`${registration.name} mengirim pendaftaran baru.`,page:'registrations',eventId:registration.id})
       form.reset()
       document.querySelector('#regAuto').textContent='Umur dan kelompok usia muncul otomatis setelah tanggal lahir dipilih.'
 
@@ -1559,7 +1493,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
 
 
  document.querySelector('#addAnnouncement')?.addEventListener('click',()=>{const f=document.querySelector('#announcementForm');f?.reset();if(f)f.elements.editId.value='';const t=document.querySelector('#announcementDialogTitle');if(t)t.textContent='Tambah Pengumuman';document.querySelector('#announcementDialog')?.showModal()})
- document.querySelector('#announcementForm')?.addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),editId=String(f.get('editId')||''),existing=state.announcements.find(a=>a.id===editId);const data={id:existing?.id||createId(),title:String(f.get('title')||'').trim(),body:String(f.get('body')||'').trim(),date:new Date().toISOString().slice(0,10)};if(existing)Object.assign(existing,data);else state.announcements.push(data);queueSave();sendPushNotification({target:'all',title:data.title,message:data.body,page:'parentAnnouncements',eventId:data.id});document.querySelector('#announcementDialog')?.close();render()})
+ document.querySelector('#announcementForm')?.addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),editId=String(f.get('editId')||''),existing=state.announcements.find(a=>a.id===editId);const data={id:existing?.id||createId(),title:String(f.get('title')||'').trim(),body:String(f.get('body')||'').trim(),date:new Date().toISOString().slice(0,10)};if(existing)Object.assign(existing,data);else state.announcements.push(data);queueSave();document.querySelector('#announcementDialog')?.close();render()})
  document.querySelectorAll('[data-edit-announcement]').forEach(b=>b.onclick=()=>{const a=state.announcements.find(x=>x.id===b.dataset.editAnnouncement),f=document.querySelector('#announcementForm');if(!a||!f)return;f.elements.editId.value=a.id;f.elements.title.value=a.title||'';f.elements.body.value=a.body||'';document.querySelector('#announcementDialogTitle').textContent='Edit Pengumuman';document.querySelector('#announcementDialog')?.showModal()})
  document.querySelectorAll('[data-delete-announcement]').forEach(b=>b.onclick=()=>{if(confirm('Hapus pengumuman ini?')){softDelete('announcements',b.dataset.deleteAnnouncement)}})
  document.querySelector('#addCompetition')?.addEventListener('click',()=>document.querySelector('#competitionDialog')?.showModal())
@@ -1673,7 +1607,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      const p={id:paymentId,athleteId:a.id,athleteName:a.name,paymentType:type,invoiceId:String(f.get('invoiceId')||''),month:String(f.get('month')||''),competitionName:String(f.get('competitionName')||''),competitionLevel:String(f.get('competitionLevel')||''),amount:Number(f.get('amount')),proof,note:String(f.get('note')||''),submittedAt:new Date().toISOString(),status:'pending'}
      state.payments.push(p)
      addAdminNotification(type==='competition'?'competition_payment':'spp_payment',type==='competition'?'Pembayaran Lomba Baru':'Pembayaran SPP Baru',`${a.name} mengirim bukti ${type==='competition'?'pembayaran lomba '+(p.competitionName||''):'SPP '+(p.month||'')}.`,'payments')
-     await commitCriticalRecord('payments',p.id);sendPushNotification({target:'admin',title:type==='competition'?'Pembayaran Lomba Baru':'Pembayaran SPP Baru',message:`${a.name} mengirim bukti pembayaran.`,page:'payments',eventId:p.id});alert('Bukti pembayaran dikirim dan sudah tersimpan di server.');render()
+     await commitCriticalRecord('payments',p.id);alert('Bukti pembayaran dikirim dan sudah tersimpan di server.');render()
    }catch(err){error.textContent=err.message||'Pembayaran gagal dikirim.'}
    finally{setFormBusy(e.currentTarget,false)}
  })
@@ -1697,7 +1631,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
  })
  document.querySelectorAll('[data-approve-payment]').forEach(b=>b.onclick=()=>{
    const p=state.payments.find(x=>x.id===b.dataset.approvePayment)
-   if(p){p.status='approved';p.approvedAt=new Date().toISOString();if(p.invoiceId){const inv=state.invoices.find(i=>i.id===p.invoiceId);if(inv)inv.status='paid'}queueSave();sendPushNotification({target:'parent',athleteId:p.athleteId,title:'Pembayaran Dikonfirmasi',message:`Pembayaran ${paymentTypeLabel(p.paymentType)} telah diterima.`,page:'parentPayment',eventId:p.id});render()}
+   if(p){p.status='approved';p.approvedAt=new Date().toISOString();if(p.invoiceId){const inv=state.invoices.find(i=>i.id===p.invoiceId);if(inv)inv.status='paid'}queueSave();render()}
  })
  document.querySelectorAll('[data-reject-payment]').forEach(b=>b.onclick=()=>{
    const p=state.payments.find(x=>x.id===b.dataset.rejectPayment)
@@ -1715,7 +1649,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      const salary={id:salaryId,coachId:coach.id,coachName:coach.name,period:String(f.get('period')),amount:Number(f.get('amount')),paidAt:new Date().toISOString(),proof,note:String(f.get('note')||''),status:'paid',createdAt:new Date().toISOString()}
      state.coachSalaries.push(salary)
      addCoachNotification(coach.id,'Gaji Telah Dibayarkan',`Gaji periode ${salary.period} sebesar Rp${salary.amount.toLocaleString('id-ID')} dibayarkan pada ${formatSalaryDate(salary.paidAt)} pukul ${formatSalaryTime(salary.paidAt)}. ${salary.note||''}`,'coachSalaryHistory')
-     await commitCriticalRecord('coachSalaries',salary.id);sendPushNotification({target:'coach',coachId:coach.id,title:'Gaji Telah Dibayarkan',message:`Gaji periode ${salary.period} telah dibayarkan.`,page:'coachSalaryHistory',eventId:salary.id});alert('Pembayaran gaji sudah tersimpan di server dan notifikasi dibuat untuk pelatih.');document.querySelector('#coachSalaryDialog').close();render()
+     await commitCriticalRecord('coachSalaries',salary.id);alert('Pembayaran gaji sudah tersimpan di server dan notifikasi dibuat untuk pelatih.');document.querySelector('#coachSalaryDialog').close();render()
    }catch(err){error.textContent=err.message||'Pembayaran gaji gagal disimpan.'}
    finally{setFormBusy(e.currentTarget,false)}
  })
@@ -1839,7 +1773,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
  const rt=document.querySelector('#recordType');rt?.addEventListener('change',()=>document.querySelector('#levelField').classList.toggle('hidden',rt.value!=='Kejuaraan'))
  document.querySelector('#timeAthleteFilter')?.addEventListener('change',e=>{window.__ascTimeAthlete=e.target.value;render()})
  document.querySelector('#timeForm')?.addEventListener('submit',async e=>{
-  e.preventDefault();const f=new FormData(e.currentTarget);let time=String(f.get('time')||'').trim().replace(',', '.');const m=time.match(/^(\d{1,2})[:.](\d{2})[.:](\d{2})$/);if(!m)return alert('Format waktu gunakan MM:SS.CC atau MM.SS.CC, contoh 01:25.48');time=`${m[1].padStart(2,'0')}.${m[2]}.${m[3]}`;const a=state.athletes.find(x=>x.id===f.get('athleteId'));if(!a)return alert('Atlet tidak ditemukan.');const c=currentCoach();const editId=String(f.get('editId')||'');const payload={athleteId:a.id,athleteName:a.name,stroke:f.get('stroke'),distance:Number(f.get('distance')||0),type:f.get('type'),level:f.get('type')==='Kejuaraan'?f.get('level'):'',date:f.get('date'),time,coachId:c?.id||'',coachName:c?.name||'Admin'};let recordId=editId;if(editId){const i=state.timeRecords.findIndex(r=>r.id===editId);if(i>=0)state.timeRecords[i]={...state.timeRecords[i],...payload,updatedAt:new Date().toISOString()}}else{recordId=createId();state.timeRecords.push({id:recordId,...payload,createdAt:new Date().toISOString()})}try{setFormBusy(e.currentTarget,true,'Menyimpan...');await commitCriticalRecord('timeRecords',recordId);sendPushNotification({target:'parent',athleteId:a.id,title:'Catatan Waktu Diperbarui',message:`Catatan waktu ${a.name} untuk ${payload.stroke} telah diperbarui.`,page:'parentTimes',eventId:recordId});document.querySelector('#timeDialog')?.close();render()}catch(err){alert(err.message||'Catatan waktu gagal disimpan.')}finally{setFormBusy(e.currentTarget,false)}
+  e.preventDefault();const f=new FormData(e.currentTarget);let time=String(f.get('time')||'').trim().replace(',', '.');const m=time.match(/^(\d{1,2})[:.](\d{2})[.:](\d{2})$/);if(!m)return alert('Format waktu gunakan MM:SS.CC atau MM.SS.CC, contoh 01:25.48');time=`${m[1].padStart(2,'0')}.${m[2]}.${m[3]}`;const a=state.athletes.find(x=>x.id===f.get('athleteId'));if(!a)return alert('Atlet tidak ditemukan.');const c=currentCoach();const editId=String(f.get('editId')||'');const payload={athleteId:a.id,athleteName:a.name,stroke:f.get('stroke'),distance:Number(f.get('distance')||0),type:f.get('type'),level:f.get('type')==='Kejuaraan'?f.get('level'):'',date:f.get('date'),time,coachId:c?.id||'',coachName:c?.name||'Admin'};let recordId=editId;if(editId){const i=state.timeRecords.findIndex(r=>r.id===editId);if(i>=0)state.timeRecords[i]={...state.timeRecords[i],...payload,updatedAt:new Date().toISOString()}}else{recordId=createId();state.timeRecords.push({id:recordId,...payload,createdAt:new Date().toISOString()})}try{setFormBusy(e.currentTarget,true,'Menyimpan...');await commitCriticalRecord('timeRecords',recordId);document.querySelector('#timeDialog')?.close();render()}catch(err){alert(err.message||'Catatan waktu gagal disimpan.')}finally{setFormBusy(e.currentTarget,false)}
  })
  document.querySelectorAll('[data-edit-time]').forEach(b=>b.onclick=()=>{const r=state.timeRecords.find(x=>x.id===b.dataset.editTime),d=document.querySelector('#timeDialog'),f=document.querySelector('#timeForm');if(!r||!d||!f)return;f.elements.editId.value=r.id;f.elements.athleteId.value=r.athleteId||'';f.elements.date.value=r.date||'';f.elements.stroke.value=r.stroke||'';f.elements.distance.value=String(r.distance||25);f.elements.type.value=r.type||'Latihan';f.elements.level.value=r.level||'';f.elements.time.value=r.time||'';document.querySelector('#timeDialogTitle').textContent='Edit Catatan Waktu';document.querySelector('#levelField')?.classList.toggle('hidden',f.elements.type.value!=='Kejuaraan');d.showModal()})
  document.querySelectorAll('[data-delete-time]').forEach(b=>b.onclick=()=>{softDelete('timeRecords',b.dataset.deleteTime)})
@@ -1859,7 +1793,6 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      if(i>=0)state.trainingPrograms[i]={...state.trainingPrograms[i],...payload,image:image||state.trainingPrograms[i].image||''}
    }else state.trainingPrograms.push({id:createId(),...payload,image,createdAt:new Date().toISOString(),createdBy:role})
    queueSave()
-   sendPushNotification({target:'parent',title:'Program Latihan Baru',message:`${payload.title} telah tersedia.`,page:'parentPrograms',eventId:editId||''})
    document.querySelector('#programDialog')?.close()
    render()
  })
@@ -1882,7 +1815,6 @@ function render(){
   if(role==='coach'&&currentCoach()?.mustChangePassword&&currentPage!=='coachPassword')currentPage='coachPassword'
   persistActiveSession()
   app.innerHTML=shell(pageContent());bindEvents()
-  setTimeout(registerCurrentPushDevice,0)
 }
 
 function maybeShowDrylandReminder(){
