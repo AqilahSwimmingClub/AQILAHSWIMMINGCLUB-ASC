@@ -6,5 +6,7 @@ dist/
 _BACKUP-DATA-*/
 .codex-tmp-isogit/
 android/local.properties
+android/.gradle/
+android/**/build/
 src/*.before-*.js
 src/*.stage2-backup

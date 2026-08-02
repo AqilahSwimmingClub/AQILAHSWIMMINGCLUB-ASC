@@ -53,7 +53,7 @@ async function registerPushDeviceToken(fcmToken,platform='web'){
     const identity=await pushIdentity()
     const {data,error:readError}=await supabase.from('asc_push_devices').select('device_id').eq('device_id',PUSH_DEVICE_ID).maybeSingle()
     if(readError)throw readError
-    const values={...identity,platform:String(platform||'web'),fcm_token:token,last_seen:now,updated_at:now,deleted_at:null}
+    const values={...identity,platform:String(platform||'web'),fcm_token:token,inactive:false,last_seen:now,updated_at:now,deleted_at:null}
     const result=data?.device_id
       ?await supabase.from('asc_push_devices').update(values).eq('device_id',PUSH_DEVICE_ID)
       :await supabase.from('asc_push_devices').insert({device_id:PUSH_DEVICE_ID,...values,created_at:now})
@@ -68,20 +68,30 @@ async function syncStoredPushDevice(){
 async function clearCurrentPushDevice(){
   try{
     const now=new Date().toISOString()
-    const {error}=await supabase.from('asc_push_devices').update({fcm_token:null,last_seen:now,updated_at:now,deleted_at:now}).eq('device_id',PUSH_DEVICE_ID)
+    const {error}=await supabase.from('asc_push_devices').update({fcm_token:null,inactive:true,last_seen:now,updated_at:now,deleted_at:now}).eq('device_id',PUSH_DEVICE_ID)
     if(error)throw error
     localStorage.removeItem('asc_fcm_token')
   }catch(error){console.error('Token perangkat gagal dihapus saat logout:',error)}
 }
 async function sendPushNotification(payload={}){
   try{
-    if(payload.inApp!==false&&payload.eventId&&['parent','coach','all'].includes(payload.target)){
-      const recipientRole=payload.target==='coach'?'coach':payload.target==='parent'?'parent':'all'
-      const recipientId=payload.coachId||payload.athleteId||'all'
-      const existing=[...(state.notifications||[]),...(state.coachNotifications||[])].some(n=>String(n.referenceId||'')===String(payload.eventId)&&String(n.recipientId||n.coachId||'')===String(recipientId))
-      if(!existing)await upsertTargetedNotification({recipientRole,recipientId,title:payload.title||'AQILAH Swimming Club',message:payload.message||'Ada informasi baru.',type:payload.type||'push_notification',referenceType:payload.referenceType||'push_event',referenceId:payload.eventId,page:payload.page||'dashboard'})
+    if(payload.inApp!==false&&payload.eventId){
+      let recipients=[]
+      if(payload.target==='parent')recipients=[{recipientRole:'parent',recipientId:payload.athleteId,athleteId:payload.athleteId,page:payload.deepLinkParent||payload.deepLink||payload.page}]
+      else if(payload.target==='coach')recipients=[{recipientRole:'coach',recipientId:payload.coachId,coachId:payload.coachId,page:payload.deepLinkCoach||payload.deepLink||payload.page}]
+      else if(payload.target==='all'){
+        const categories=Array.isArray(payload.trainingCategories)?payload.trainingCategories:[],groups=Array.isArray(payload.ageGroups)?payload.ageGroups:[]
+        const parents=(state.athletes||[]).filter(a=>(!categories.length||categories.includes(a.trainingCategory))&&(!groups.length||groups.some(g=>(a.trainingGroups||[a.ageGroup]).includes(g)))).map(a=>({recipientRole:'parent',recipientId:a.id,athleteId:a.id,page:payload.deepLinkParent||payload.deepLink||payload.page}))
+        const coaches=(state.coaches||[]).filter(c=>c.active!==false).map(c=>({recipientRole:'coach',recipientId:c.id,coachId:c.id,page:payload.deepLinkCoach||payload.deepLink||payload.page}))
+        recipients=[...parents,...coaches]
+      }
+      for(const recipient of recipients){
+        if(!recipient.recipientId)continue
+        const existing=[...(state.notifications||[]),...(state.coachNotifications||[])].some(n=>String(n.referenceId||'')===String(payload.eventId)&&n.type===(payload.type||'push_notification')&&String(n.recipientId||n.coachId||'')===String(recipient.recipientId))
+        if(!existing)await upsertTargetedNotification({...recipient,title:payload.title||'AQILAH Swimming Club',message:payload.message||'Ada informasi baru.',type:payload.type||'push_notification',referenceType:payload.referenceType||'push_event',referenceId:payload.eventId})
+      }
     }
-    const {data,error}=await supabase.functions.invoke('send-push',{body:{clubId:CLUB_ID,...payload}})
+    const {data,error}=await supabase.functions.invoke('send-push',{body:{clubId:CLUB_ID,...payload,body:payload.body||payload.message,deepLink:payload.deepLink||payload.page||'dashboard',referenceId:payload.referenceId||payload.eventId||''}})
     if(error)throw error
     if(data?.ok===false)throw new Error(data.error||'Firebase menolak pengiriman notifikasi.')
     return data
@@ -89,6 +99,8 @@ async function sendPushNotification(payload={}){
 }
 globalThis.ASCRegisterFcmToken=(token,platform='android')=>registerPushDeviceToken(token,platform)
 globalThis.addEventListener?.('aqilah-fcm-token',event=>registerPushDeviceToken(event?.detail?.token,event?.detail?.platform||'android'))
+globalThis.ASCOpenDeepLink=deepLink=>{const page=String(deepLink||'').trim();if(!page)return false;currentPage=page;render();return true}
+globalThis.addEventListener?.('aqilah-push-open',event=>globalThis.ASCOpenDeepLink(event?.detail?.deepLink||event?.detail?.page))
 const ROW_COLLECTIONS = {
   athletes: {
     table: 'asc_athletes',
@@ -140,12 +152,12 @@ const ROW_COLLECTIONS = {
   },
   notifications: {
     table:'asc_notifications',
-    toRow:item=>({legacy_id:String(item.id||createId()),recipient_role:item.recipientRole||'admin',recipient_id:item.recipientId||null,title:item.title||null,message:item.message||null,type:item.type||null,reference_type:item.referenceType||null,reference_id:item.referenceId||null,read_at:item.readAt||null,data:{...item,notificationAudience:item.notificationAudience||'admin'},deleted_at:null,updated_at:new Date().toISOString()}),
+    toRow:item=>({legacy_id:String(item.id||createId()),recipient_role:item.recipientRole||'admin',recipient_id:item.recipientId||null,athlete_id:item.athleteId||null,coach_id:item.coachId||null,title:item.title||null,message:item.message||null,type:item.type||null,reference_type:item.referenceType||null,reference_id:item.referenceId||null,deep_link:item.deepLink||item.page||null,created_at:item.createdAt||new Date().toISOString(),read_at:item.readAt||null,data:{...item,notificationAudience:item.notificationAudience||'admin'},deleted_at:null,updated_at:new Date().toISOString()}),
     filterItem:item=>(item.notificationAudience||'admin')!=='coach'
   },
   coachNotifications: {
     table:'asc_notifications',
-    toRow:item=>({legacy_id:String(item.id||createId()),recipient_role:'coach',recipient_id:item.recipientId||item.coachId||null,title:item.title||null,message:item.message||null,type:item.type||null,reference_type:item.referenceType||null,reference_id:item.referenceId||null,read_at:item.readAt||null,data:{...item,notificationAudience:'coach'},deleted_at:null,updated_at:new Date().toISOString()}),
+    toRow:item=>({legacy_id:String(item.id||createId()),recipient_role:'coach',recipient_id:item.recipientId||item.coachId||null,athlete_id:item.athleteId||null,coach_id:item.coachId||item.recipientId||null,title:item.title||null,message:item.message||null,type:item.type||null,reference_type:item.referenceType||null,reference_id:item.referenceId||null,deep_link:item.deepLink||item.page||null,created_at:item.createdAt||new Date().toISOString(),read_at:item.readAt||null,data:{...item,notificationAudience:'coach'},deleted_at:null,updated_at:new Date().toISOString()}),
     filterItem:item=>item.notificationAudience==='coach'
   },
   financeTransactions: {
@@ -1204,16 +1216,16 @@ async function deactivateFinanceReference(direction,referenceType,referenceId){
   const item=state.financeTransactions.find(x=>x.direction===direction&&x.referenceType===referenceType&&String(x.referenceId)===String(referenceId))
   if(item)await deleteDedicatedSafely('financeTransactions',item.id)
 }
-async function upsertTargetedNotification({recipientRole,recipientId,title,message,type,referenceType,referenceId,page}){
-  const id=`NTF-${recipientRole}-${recipientId}-${type}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-')
+async function upsertTargetedNotification({recipientRole,recipientId,athleteId='',coachId='',title,message,type,referenceType,referenceId,page}){
+  const id=`NTF-${recipientRole}-${recipientId||'all'}-${type}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-')
   const list=recipientRole==='coach'?state.coachNotifications:state.notifications
   const index=list.findIndex(n=>n.id===id||(n.referenceType===referenceType&&String(n.referenceId)===String(referenceId)&&String(n.recipientId||n.coachId)===String(recipientId)&&n.type===type))
-  const item={id,recipientRole,recipientId,coachId:recipientRole==='coach'?recipientId:undefined,title,message,type,referenceType,referenceId,page,notificationAudience:recipientRole==='coach'?'coach':recipientRole,read:false,readAt:null,createdAt:index>=0?list[index].createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}
+  const item={id,recipientRole,recipientId,athleteId:athleteId||(recipientRole==='parent'?recipientId:''),coachId:coachId||(recipientRole==='coach'?recipientId:''),title,message,type,referenceType,referenceId,page,deepLink:page,notificationAudience:recipientRole==='coach'?'coach':recipientRole,read:index>=0?Boolean(list[index].read):false,readAt:index>=0?list[index].readAt:null,createdAt:index>=0?list[index].createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}
   if(index>=0)list[index]={...list[index],...item};else list.unshift(item)
   await commitCriticalRecord(recipientRole==='coach'?'coachNotifications':'notifications',id)
   return item
 }
-function unreadNotifications(){return (state.notifications||[]).filter(n=>!n.read).length}
+function unreadNotifications(){return (state.notifications||[]).filter(n=>(n.notificationAudience||n.recipientRole||'admin')==='admin'&&!n.read).length}
 function paymentStatusLabel(status){return status==='approved'?'Lunas':status==='rejected'?'Ditolak':'Menunggu Konfirmasi'}
 function paymentTypeLabel(type){return type==='competition'?'Pembayaran Lomba':'Pembayaran SPP'}
 
@@ -1392,7 +1404,7 @@ function loginPage() {
         paymentAccountNumber:'1560020198356'
       }
       state.pendingRegistrations.push(registration)
-      addAdminNotification('registration','Pendaftar atlet baru',`${registration.name} mengirim formulir pendaftaran dan bukti pembayaran.`,'registrations')
+      addAdminNotification('registration','Pendaftar Atlet Baru',`${registration.name} mengirim formulir pendaftaran.`,'registrations')
       await commitCriticalRecord('pendingRegistrations',registration.id)
       form.reset()
       document.querySelector('#regAuto').textContent='Umur dan kelompok usia muncul otomatis setelah tanggal lahir dipilih.'
@@ -1746,7 +1758,7 @@ function parentPrograms(){const a=parentAthlete();return `<section class="card">
 function parentTimes(){const a=parentAthlete();const rows=state.timeRecords.filter(r=>r.athleteId===a?.id).sort((x,y)=>String(x.date||'').localeCompare(String(y.date||'')));return `<section class="card"><h3>Perkembangan Waktu ${esc(a?.name)}</h3><section class="record-insight-grid"><article class="insight-card"><h4>Grafik 8 Catatan Terakhir</h4>${progressBars(rows)}</article><article class="insight-card"><h4>Personal Best</h4>${personalBestSummary(rows)}</article></section><div class="table-wrap"><table><thead><tr><th>Gaya</th><th>Jenis</th><th>Tingkat</th><th>Tanggal</th><th>Waktu</th><th>Pelatih</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td>${r.stroke}</td><td>${r.type}</td><td>${r.level||'-'}</td><td>${r.date}</td><td><b>${r.time}</b></td><td>${esc(r.coachName||'Admin')}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">Belum ada catatan waktu.</td></tr>'}</tbody></table></div></section>`}
 
 
-function notificationsPage(){const list=(state.notifications||[]);return `<section class="card"><div class="card-head"><div><h3>Pusat Notifikasi Admin</h3><small>${unreadNotifications()} notifikasi belum dibaca</small></div><div class="notification-actions"><button class="secondary small" id="markAllRead">Tandai Semua Dibaca</button><button class="danger small" id="deleteReadNotifications">Hapus yang Dibaca</button></div></div><div class="notification-list">${list.length?list.map(n=>`<button class="notification-item ${n.read?'':'unread'}" data-open-notification="${n.id}"><span class="notification-icon">${n.type==='payment'?'Rp':'✚'}</span><span><b>${esc(n.title)}</b><small>${esc(n.message)}</small><time>${new Date(n.createdAt).toLocaleString('id-ID')}</time></span>${n.read?'':'<i>Baru</i>'}</button>`).join(''):'<div class="empty">Belum ada notifikasi.</div>'}</div></section>`}
+function notificationsPage(){const list=(state.notifications||[]).filter(n=>(n.notificationAudience||n.recipientRole||'admin')==='admin');return `<section class="card"><div class="card-head"><div><h3>Pusat Notifikasi Admin</h3><small>${unreadNotifications()} notifikasi belum dibaca</small></div><div class="notification-actions"><button class="secondary small" id="markAllRead">Tandai Semua Dibaca</button><button class="danger small" id="deleteReadNotifications">Hapus yang Dibaca</button></div></div><div class="notification-list">${list.length?list.map(n=>`<button class="notification-item ${n.read?'':'unread'}" data-open-notification="${n.id}"><span class="notification-icon">${n.type==='payment'?'Rp':'✚'}</span><span><b>${esc(n.title)}</b><small>${esc(n.message)}</small><time>${new Date(n.createdAt).toLocaleString('id-ID')}</time></span>${n.read?'':'<i>Baru</i>'}</button>`).join(''):'<div class="empty">Belum ada notifikasi.</div>'}</div></section>`}
 
 function parentPaymentPage(){
  const a=parentAthlete(),mine=state.payments.filter(p=>p.athleteId===a?.id).slice().reverse()
@@ -2136,9 +2148,9 @@ function bindEvents(){
  });
 };
 document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.preventDefault();event.stopPropagation();navigateToPage(b.dataset.page)});document.querySelectorAll('table').forEach(table=>{const labels=[...table.querySelectorAll('thead th')].map(th=>th.textContent.trim());table.querySelectorAll('tbody tr').forEach(row=>[...row.children].forEach((cell,index)=>{if(cell.tagName==='TD')cell.dataset.label=labels[index]||''}))});
- document.querySelectorAll('[data-open-notification]').forEach(b=>b.onclick=async()=>{const n=state.notifications.find(x=>x.id===b.dataset.openNotification);if(n){n.read=true;currentPage=n.target||'dashboard';try{await commitCriticalRecord('notifications',n.id)}catch(error){console.error('Notifikasi gagal diperbarui:',error)}render()}})
- document.querySelector('#markAllRead')?.addEventListener('click',async()=>{const changed=state.notifications.filter(n=>!n.read);changed.forEach(n=>n.read=true);await Promise.allSettled(changed.map(n=>commitCriticalRecord('notifications',n.id)));render()})
- document.querySelector('#deleteReadNotifications')?.addEventListener('click',async()=>{const ids=state.notifications.filter(n=>n.read).map(n=>n.id);for(const id of ids){try{await deleteDedicatedSafely('notifications',id)}catch(error){console.error(`Notifikasi ${id} gagal ditandai terhapus:`,error)}}addAudit('Bersihkan','notifications','','Menandai notifikasi yang sudah dibaca');render()})
+ document.querySelectorAll('[data-open-notification]').forEach(b=>b.onclick=async()=>{const n=state.notifications.find(x=>x.id===b.dataset.openNotification);if(n){n.read=true;n.readAt=new Date().toISOString();currentPage=n.deepLink||n.page||n.target||'dashboard';try{await commitCriticalRecord('notifications',n.id)}catch(error){console.error('Notifikasi gagal diperbarui:',error)}render()}})
+ document.querySelector('#markAllRead')?.addEventListener('click',async()=>{const changed=state.notifications.filter(n=>(n.notificationAudience||n.recipientRole||'admin')==='admin'&&!n.read);changed.forEach(n=>{n.read=true;n.readAt=new Date().toISOString()});await Promise.allSettled(changed.map(n=>commitCriticalRecord('notifications',n.id)));render()})
+ document.querySelector('#deleteReadNotifications')?.addEventListener('click',async()=>{const ids=state.notifications.filter(n=>(n.notificationAudience||n.recipientRole||'admin')==='admin'&&n.read).map(n=>n.id);for(const id of ids){try{await deleteDedicatedSafely('notifications',id)}catch(error){console.error(`Notifikasi ${id} gagal ditandai terhapus:`,error)}}addAudit('Bersihkan','notifications','','Menandai notifikasi yang sudah dibaca');render()})
  document.querySelector('#syncNow')?.addEventListener('click',async()=>{syncStatus='Sinkronisasi manual dimulai...';updateSync();pendingRemoteSave=true;await saveRemote();render()})
  document.querySelector('#downloadFullBackup')?.addEventListener('click',()=>{addAudit('Download Backup','system','','Backup JSON lengkap');downloadJsonFile({exportedAt:new Date().toISOString(),clubId:CLUB_ID,payload:state},`AQILAH-BACKUP-${new Date().toISOString().slice(0,10)}.json`)})
  document.querySelector('#downloadAuditTrail')?.addEventListener('click',()=>downloadJsonFile({exportedAt:new Date().toISOString(),auditTrail:state.auditTrail||[]},`AQILAH-AUDIT-${new Date().toISOString().slice(0,10)}.json`))
@@ -2174,7 +2186,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
    try{
      await commitCriticalRecord('competitions',competition.id)
      addAdminNotification('competition','Event perlombaan baru',competition.title,'competitions')
-     sendPushNotification({target:'all',title:'Informasi Lomba Baru',message:`${competition.title} telah ditambahkan. Silakan lihat detailnya.`,page:'competitions',eventId:competition.id})
+     sendPushNotification({target:'all',title:'Informasi Lomba Baru',message:`${competition.title} telah ditambahkan. Silakan lihat detailnya.`,page:'parentCompetitions',deepLinkParent:'parentCompetitions',deepLinkCoach:'coachDashboard',type:'competition_created',referenceType:'competition',eventId:competition.id})
      document.querySelector('#competitionDialog')?.close();render()
    }catch(error){state.competitions=state.competitions.filter(item=>item.id!==competition.id);saveLocal();console.error('Supabase asc_competitions gagal membuat event:',error);alert(error.message||'Event belum tersimpan di Supabase.')}
   })
@@ -2222,7 +2234,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      updatedBy:role
    }
    state.schedules.push(schedule)
-   try{await commitCriticalRecord('schedules',schedule.id);sendPushNotification({target:'all',title:'Jadwal Latihan Baru',message:`${schedule.day} ${schedule.time} - ${schedule.location}`,page:'schedules',eventId:schedule.id});render()}catch(error){console.error('Jadwal gagal disimpan:',error);alert(error.message||'Jadwal belum tersimpan di Supabase.')}
+   try{await commitCriticalRecord('schedules',schedule.id);sendPushNotification({target:'all',title:'Jadwal Latihan Diperbarui',message:'Jadwal latihan telah diperbarui.',page:'parentSchedules',deepLinkParent:'parentSchedules',deepLinkCoach:'coachSchedules',type:'schedule_updated',referenceType:'schedule',eventId:schedule.id});render()}catch(error){console.error('Jadwal gagal disimpan:',error);alert(error.message||'Jadwal belum tersimpan di Supabase.')}
  })
  document.querySelectorAll('[data-delete-schedule]').forEach(b=>b.onclick=async()=>{
    if(!['admin','coach'].includes(role))return
@@ -2264,7 +2276,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      const proof=await registrationUpload(f.get('proof'),'payment',`${a.id}/${paymentId}`)
      const p={id:paymentId,athleteId:a.id,athleteName:a.name,paymentType:type,invoiceId:String(f.get('invoiceId')||''),month:String(f.get('month')||''),competitionName:String(f.get('competitionName')||''),competitionLevel:String(f.get('competitionLevel')||''),amount:Number(f.get('amount')),proof,note:String(f.get('note')||''),submittedAt:new Date().toISOString(),status:'pending'}
      state.payments.push(p)
-     addAdminNotification(type==='competition'?'competition_payment':'spp_payment',type==='competition'?'Pembayaran Lomba Baru':'Pembayaran SPP Baru',`${a.name} mengirim bukti ${type==='competition'?'pembayaran lomba '+(p.competitionName||''):'SPP '+(p.month||'')}.`,'payments')
+     addAdminNotification(type==='competition'?'competition_payment':'spp_payment',type==='competition'?'Pembayaran Lomba Baru':'Pembayaran SPP Baru',type==='competition'?`${a.name} mengirim pembayaran lomba ${p.competitionName||''}.`:`${a.name} mengirim bukti pembayaran SPP ${p.month||''}.`,type==='competition'?'competitionPayments':'payments')
      await commitCriticalRecord('payments',p.id);alert('Bukti pembayaran dikirim dan sudah tersimpan di server.');render()
    }catch(err){error.textContent=err.message||'Pembayaran gagal dikirim.'}
    finally{setFormBusy(e.currentTarget,false)}
@@ -2289,7 +2301,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
  })
  document.querySelectorAll('[data-approve-payment]').forEach(b=>b.onclick=async()=>{
    const p=state.payments.find(x=>x.id===b.dataset.approvePayment)
-   if(p){p.status='approved';p.approvedAt=new Date().toISOString();if(p.invoiceId){const inv=state.invoices.find(i=>i.id===p.invoiceId);if(inv)inv.status='paid'}try{await commitCriticalRecord('payments',p.id);await upsertFinanceReference({direction:'income',referenceType:'payment',referenceId:p.id,amount:p.amount,category:p.paymentType==='competition'?'Pembayaran Lomba':'Pembayaran SPP',transactionType:p.paymentType,description:`${paymentTypeLabel(p.paymentType)} - ${p.athleteName} - ${p.month||p.competitionName||''}`,athleteId:p.athleteId,athleteName:p.athleteName,paymentId:p.id,proofUrl:p.proof,transactionDate:p.approvedAt});await upsertTargetedNotification({recipientRole:'parent',recipientId:p.athleteId,title:p.paymentType==='competition'?'Pembayaran Lomba Dikonfirmasi':'Pembayaran SPP Dikonfirmasi',message:`Pembayaran ${p.month||p.competitionName||''} telah dikonfirmasi.`,type:'payment_approved',referenceType:'payment',referenceId:p.id,page:'parentPayment'});sendPushNotification({target:'parent',athleteId:p.athleteId,title:p.paymentType==='competition'?'Pembayaran Lomba Dikonfirmasi':'Pembayaran SPP Dikonfirmasi',message:`Pembayaran ${p.month||p.competitionName||''} telah dikonfirmasi.`,page:'parentPayment',eventId:p.id});render()}catch(error){console.error('Pembayaran gagal diperbarui:',error);alert(error.message||'Pembayaran belum diperbarui di Supabase.')}}
+   if(p){p.status='approved';p.approvedAt=new Date().toISOString();if(p.invoiceId){const inv=state.invoices.find(i=>i.id===p.invoiceId);if(inv)inv.status='paid'}try{const isCompetition=p.paymentType==='competition',title=isCompetition?'Pembayaran Lomba Dikonfirmasi':'Pembayaran SPP Dikonfirmasi',message=isCompetition?`Pembayaran lomba ${p.competitionName||''} telah dikonfirmasi.`:`Pembayaran SPP ${p.month||''} telah dikonfirmasi.`,deepLink=isCompetition?'parentCompetitions':'parentPayment';await commitCriticalRecord('payments',p.id);await upsertFinanceReference({direction:'income',referenceType:'payment',referenceId:p.id,amount:p.amount,category:isCompetition?'Pembayaran Lomba':'Pembayaran SPP',transactionType:p.paymentType,description:`${paymentTypeLabel(p.paymentType)} - ${p.athleteName} - ${p.month||p.competitionName||''}`,athleteId:p.athleteId,athleteName:p.athleteName,paymentId:p.id,proofUrl:p.proof,transactionDate:p.approvedAt});await upsertTargetedNotification({recipientRole:'parent',recipientId:p.athleteId,athleteId:p.athleteId,title,message,type:'payment_approved',referenceType:'payment',referenceId:p.id,page:deepLink});sendPushNotification({target:'parent',athleteId:p.athleteId,title,message,page:deepLink,type:'payment_approved',referenceType:'payment',eventId:p.id});render()}catch(error){console.error('Pembayaran gagal diperbarui:',error);alert(error.message||'Pembayaran belum diperbarui di Supabase.')}}
  })
  document.querySelectorAll('[data-reject-payment]').forEach(b=>b.onclick=async()=>{
    const p=state.payments.find(x=>x.id===b.dataset.rejectPayment)
@@ -2441,7 +2453,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
  const rt=document.querySelector('#recordType');rt?.addEventListener('change',()=>document.querySelector('#levelField').classList.toggle('hidden',rt.value!=='Kejuaraan'))
  document.querySelector('#timeAthleteFilter')?.addEventListener('change',e=>{window.__ascTimeAthlete=e.target.value;render()})
  document.querySelector('#timeForm')?.addEventListener('submit',async e=>{
-  e.preventDefault();const f=new FormData(e.currentTarget);let time=String(f.get('time')||'').trim().replace(',', '.');const m=time.match(/^(\d{1,2})[:.](\d{2})[.:](\d{2})$/);if(!m)return alert('Format waktu gunakan MM:SS.CC atau MM.SS.CC, contoh 01:25.48');time=`${m[1].padStart(2,'0')}.${m[2]}.${m[3]}`;const a=state.athletes.find(x=>x.id===f.get('athleteId'));if(!a)return alert('Atlet tidak ditemukan.');const c=currentCoach();const editId=String(f.get('editId')||'');const payload={athleteId:a.id,athleteName:a.name,stroke:f.get('stroke'),distance:Number(f.get('distance')||0),type:f.get('type'),level:f.get('type')==='Kejuaraan'?f.get('level'):'',date:f.get('date'),time,coachId:c?.id||'',coachName:c?.name||'Admin'};let recordId=editId;if(editId){const i=state.timeRecords.findIndex(r=>r.id===editId);if(i>=0)state.timeRecords[i]={...state.timeRecords[i],...payload,updatedAt:new Date().toISOString()}}else{recordId=createId();state.timeRecords.push({id:recordId,...payload,createdAt:new Date().toISOString()})}try{setFormBusy(e.currentTarget,true,'Menyimpan...');await commitCriticalRecord('timeRecords',recordId);if(!editId)sendPushNotification({target:'parent',athleteId:a.id,title:'Catatan Waktu Baru',message:`${payload.stroke} ${payload.distance}m: ${time}`,page:'parentTimes',eventId:recordId});document.querySelector('#timeDialog')?.close();render()}catch(err){alert(err.message||'Catatan waktu gagal disimpan.')}finally{setFormBusy(e.currentTarget,false)}
+  e.preventDefault();const f=new FormData(e.currentTarget);let time=String(f.get('time')||'').trim().replace(',', '.');const m=time.match(/^(\d{1,2})[:.](\d{2})[.:](\d{2})$/);if(!m)return alert('Format waktu gunakan MM:SS.CC atau MM.SS.CC, contoh 01:25.48');time=`${m[1].padStart(2,'0')}.${m[2]}.${m[3]}`;const a=state.athletes.find(x=>x.id===f.get('athleteId'));if(!a)return alert('Atlet tidak ditemukan.');const c=currentCoach();const editId=String(f.get('editId')||'');const payload={athleteId:a.id,athleteName:a.name,stroke:f.get('stroke'),distance:Number(f.get('distance')||0),type:f.get('type'),level:f.get('type')==='Kejuaraan'?f.get('level'):'',date:f.get('date'),time,coachId:c?.id||'',coachName:c?.name||'Admin'};let recordId=editId;if(editId){const i=state.timeRecords.findIndex(r=>r.id===editId);if(i>=0)state.timeRecords[i]={...state.timeRecords[i],...payload,updatedAt:new Date().toISOString()}}else{recordId=createId();state.timeRecords.push({id:recordId,...payload,createdAt:new Date().toISOString()})}try{setFormBusy(e.currentTarget,true,'Menyimpan...');await commitCriticalRecord('timeRecords',recordId);if(!editId)sendPushNotification({target:'parent',athleteId:a.id,title:'Catatan Waktu Baru',message:`Catatan waktu terbaru untuk ${a.name} telah ditambahkan.`,page:'parentTimes',type:'time_record_created',referenceType:'time_record',eventId:recordId});document.querySelector('#timeDialog')?.close();render()}catch(err){alert(err.message||'Catatan waktu gagal disimpan.')}finally{setFormBusy(e.currentTarget,false)}
  })
  document.querySelectorAll('[data-edit-time]').forEach(b=>b.onclick=()=>{const r=state.timeRecords.find(x=>x.id===b.dataset.editTime),d=document.querySelector('#timeDialog'),f=document.querySelector('#timeForm');if(!r||!d||!f)return;f.elements.editId.value=r.id;f.elements.athleteId.value=r.athleteId||'';f.elements.date.value=r.date||'';f.elements.stroke.value=r.stroke||'';f.elements.distance.value=String(r.distance||25);f.elements.type.value=r.type||'Latihan';f.elements.level.value=r.level||'';f.elements.time.value=r.time||'';document.querySelector('#timeDialogTitle').textContent='Edit Catatan Waktu';document.querySelector('#levelField')?.classList.toggle('hidden',f.elements.type.value!=='Kejuaraan');d.showModal()})
  document.querySelectorAll('[data-delete-time]').forEach(b=>b.onclick=async()=>{try{await deleteDedicatedSafely('timeRecords',b.dataset.deleteTime)}catch(error){console.error('Catatan waktu gagal ditandai terhapus:',error);alert(error.message||'Catatan waktu belum terhapus di Supabase.')}})
@@ -2461,12 +2473,12 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      const i=state.trainingPrograms.findIndex(p=>p.id===editId)
      if(i>=0)state.trainingPrograms[i]={...state.trainingPrograms[i],...payload,image:image||state.trainingPrograms[i].image||''}
    }else{programId=createId();state.trainingPrograms.push({id:programId,...payload,image,createdAt:new Date().toISOString(),createdBy:role})}
-   try{await commitCriticalRecord('trainingPrograms',programId);if(!editId)sendPushNotification({target:'parent',title:'Program Latihan Baru',message:payload.title,page:'parentPrograms',eventId:programId});document.querySelector('#programDialog')?.close();render()}catch(error){console.error('Program latihan gagal disimpan:',error);alert(error.message||'Program latihan belum tersimpan di Supabase.')}
+   try{await commitCriticalRecord('trainingPrograms',programId);if(!editId)sendPushNotification({target:'all',title:'Program Latihan Baru',message:'Program latihan baru telah tersedia.',page:'parentPrograms',deepLinkParent:'parentPrograms',deepLinkCoach:'trainingPrograms',trainingCategories:categories,ageGroups:trainingGroups,type:'training_program_created',referenceType:'training_program',eventId:programId});document.querySelector('#programDialog')?.close();render()}catch(error){console.error('Program latihan gagal disimpan:',error);alert(error.message||'Program latihan belum tersimpan di Supabase.')}
  })
  document.querySelectorAll('[data-edit-program]').forEach(b=>b.onclick=()=>{const p=state.trainingPrograms.find(x=>x.id===b.dataset.editProgram),d=document.querySelector('#programDialog'),f=document.querySelector('#programForm');if(!p||!d||!f)return;f.elements.editId.value=p.id;f.elements.title.value=p.title||'';f.elements.date.value=p.date||'';f.elements.duration.value=p.duration||'';f.elements.totalMeters.value=p.totalMeters||'';f.elements.details.value=p.details||'';f.elements.videoUrl.value=p.videoUrl||'';f.querySelectorAll('[name="categories"]').forEach(x=>x.checked=(p.categories||[]).includes(x.value));f.querySelectorAll('[name="trainingGroups"]').forEach(x=>x.checked=(p.trainingGroups||[]).includes(x.value));const t=document.querySelector('#programDialogTitle');if(t)t.textContent='Edit Program Latihan';d.showModal()})
  document.querySelectorAll('[data-delete-program]').forEach(b=>b.onclick=async()=>{if(!['admin','coach'].includes(role))return;if(confirm('Hapus program latihan ini?')){try{await deleteDedicatedSafely('trainingPrograms',b.dataset.deleteProgram)}catch(error){console.error('Program latihan gagal ditandai terhapus:',error);alert(error.message||'Program latihan belum terhapus di Supabase.')}}})
  document.querySelector('#attendanceDate')?.addEventListener('change',e=>{window.__ascAttendanceDate=e.target.value;render()})
- document.querySelectorAll('.attendance-status').forEach(el=>el.addEventListener('change',async e=>{const date=window.__ascAttendanceDate||new Date().toISOString().slice(0,10),athleteId=e.target.dataset.athleteId,a=state.athletes.find(x=>x.id===athleteId);let r=state.attendance.find(x=>x.date===date&&x.athleteId===athleteId);if(!r){r={id:createId(),date,athleteId,athleteName:a?.name||athleteId,status:'',note:''};state.attendance.push(r)}r.status=e.target.value;r.updatedAt=new Date().toISOString();r.updatedBy=role;try{await commitCriticalRecord('attendance',r.id);sendPushNotification({target:'parent',athleteId,title:'Pembaruan Absensi',message:`Status ${date}: ${r.status||'Belum Diisi'}`,page:'parentAttendance',eventId:r.id})}catch(error){console.error('Status absensi gagal disimpan:',error);alert(error.message||'Status absensi belum berhasil disimpan ke Supabase.')}}))
+ document.querySelectorAll('.attendance-status').forEach(el=>el.addEventListener('change',async e=>{const date=window.__ascAttendanceDate||new Date().toISOString().slice(0,10),athleteId=e.target.dataset.athleteId,a=state.athletes.find(x=>x.id===athleteId);let r=state.attendance.find(x=>x.date===date&&x.athleteId===athleteId);if(!r){r={id:createId(),date,athleteId,athleteName:a?.name||athleteId,status:'',note:''};state.attendance.push(r)}r.status=e.target.value;r.updatedAt=new Date().toISOString();r.updatedBy=role;try{await commitCriticalRecord('attendance',r.id);sendPushNotification({target:'parent',athleteId,title:'Informasi Kehadiran Atlet',message:`Status kehadiran ${a?.name||athleteId}: ${r.status||'Belum Diisi'}.`,page:'parentAttendance',type:'attendance_updated',referenceType:'attendance',eventId:r.id})}catch(error){console.error('Status absensi gagal disimpan:',error);alert(error.message||'Status absensi belum berhasil disimpan ke Supabase.')}}))
  document.querySelectorAll('.attendance-note').forEach(el=>el.addEventListener('change',async e=>{const date=window.__ascAttendanceDate||new Date().toISOString().slice(0,10),athleteId=e.target.dataset.athleteId,a=state.athletes.find(x=>x.id===athleteId);let r=state.attendance.find(x=>x.date===date&&x.athleteId===athleteId);if(!r){r={id:createId(),date,athleteId,athleteName:a?.name||athleteId,status:'',note:''};state.attendance.push(r)}r.note=e.target.value;r.updatedAt=new Date().toISOString();r.updatedBy=role;try{await commitCriticalRecord('attendance',r.id)}catch(error){console.error('Catatan absensi gagal disimpan:',error);alert(error.message||'Catatan absensi belum berhasil disimpan ke Supabase.')}}))
  document.querySelector('#settingsForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.currentTarget);state.settings.clubName=String(f.get('clubName')||'AQILAH Swimming Club').trim();state.settings.coachName=String(f.get('coachName')||'').trim();const logoFile=f.get('logo');if(logoFile&&logoFile.size)state.settings.logo=await imageData(logoFile,500);queueSave();alert('Identitas dan logo berhasil disimpan.');render()})
  document.querySelector('#adminPasswordForm')?.addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),currentPassword=String(f.get('currentPassword')||''),newPassword=String(f.get('newPassword')||''),confirmPassword=String(f.get('confirmPassword')||''),error=document.querySelector('#adminPasswordError');error.textContent='';if(currentPassword!==state.settings.adminPassword){error.textContent='Password saat ini salah.';return}if(!/^[A-Za-z0-9]{6}$/.test(newPassword)){error.textContent='Password baru harus tepat 6 karakter dan hanya boleh huruf atau angka.';return}if(newPassword!==confirmPassword){error.textContent='Konfirmasi password baru tidak sama.';return}state.settings.adminPassword=newPassword;queueSave();e.currentTarget.reset();alert('Password Admin berhasil diganti.')})
