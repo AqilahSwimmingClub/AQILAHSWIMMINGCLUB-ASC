@@ -3,7 +3,13 @@
 	"appName": "AQILAH Swimming Club",
 	"webDir": "dist",
 	"server": {
-		"androidScheme": "https"
+		"url": "https://aqilahswimmingclub.vercel.app",
+		"cleartext": false,
+		"androidScheme": "https",
+		"allowNavigation": [
+			"aqilahswimmingclub.vercel.app",
+			"nykenupjktgmsotfzrjj.supabase.co"
+		]
 	},
 	"android": {
 		"allowMixedContent": false,
