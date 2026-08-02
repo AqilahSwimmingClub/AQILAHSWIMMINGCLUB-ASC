@@ -1,5 +1,6 @@
 create table if not exists public.asc_payments (legacy_id text primary key, payment_type text, amount numeric, payment_date date, status text, proof_url text, notes text, data jsonb not null default '{}'::jsonb, deleted_at timestamptz, updated_at timestamptz not null default now());
 alter table public.asc_payments enable row level security;
+grant select,insert,update,delete on public.asc_payments to anon,authenticated;
 do $$ begin
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_payments' and policyname='ASC payments read') then create policy "ASC payments read" on public.asc_payments for select to anon,authenticated using(true); end if;
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_payments' and policyname='ASC payments insert') then create policy "ASC payments insert" on public.asc_payments for insert to anon,authenticated with check(true); end if;

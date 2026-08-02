@@ -2,6 +2,7 @@ create table if not exists public.asc_coaches (id uuid not null default gen_rand
 alter table public.asc_coaches add column if not exists id uuid default gen_random_uuid();
 create unique index if not exists asc_coaches_id_uidx on public.asc_coaches(id);
 alter table public.asc_coaches enable row level security;
+grant select,insert,update,delete on public.asc_coaches to anon,authenticated;
 do $$ begin
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_coaches' and policyname='ASC coaches read') then create policy "ASC coaches read" on public.asc_coaches for select to anon,authenticated using(true); end if;
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_coaches' and policyname='ASC coaches insert') then create policy "ASC coaches insert" on public.asc_coaches for insert to anon,authenticated with check(true); end if;

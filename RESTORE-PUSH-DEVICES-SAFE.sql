@@ -10,6 +10,7 @@ alter table public.asc_push_devices add column if not exists last_seen timestamp
 alter table public.asc_push_devices add column if not exists created_at timestamptz default now();
 create unique index if not exists asc_push_devices_device_id_uidx on public.asc_push_devices(device_id);
 alter table public.asc_push_devices enable row level security;
+grant select,insert,update,delete on public.asc_push_devices to anon,authenticated;
 do $$ begin
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_push_devices' and policyname='ASC push devices read') then create policy "ASC push devices read" on public.asc_push_devices for select to anon,authenticated using(true); end if;
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_push_devices' and policyname='ASC push devices insert') then create policy "ASC push devices insert" on public.asc_push_devices for insert to anon,authenticated with check(true); end if;

@@ -44,6 +44,8 @@ begin
 end
 $$;
 
+grant select,insert,update,delete on public.asc_attendance to anon,authenticated;
+
 do $$
 declare
   source_payload jsonb;

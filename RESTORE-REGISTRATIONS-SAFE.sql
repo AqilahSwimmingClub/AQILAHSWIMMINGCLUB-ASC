@@ -1,5 +1,6 @@
 create table if not exists public.asc_registrations (legacy_id text primary key, data jsonb not null default '{}'::jsonb, deleted_at timestamptz, updated_at timestamptz not null default now());
 alter table public.asc_registrations enable row level security;
+grant select,insert,update,delete on public.asc_registrations to anon,authenticated;
 do $$ begin
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_registrations' and policyname='ASC registrations read') then create policy "ASC registrations read" on public.asc_registrations for select to anon,authenticated using(true); end if;
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_registrations' and policyname='ASC registrations insert') then create policy "ASC registrations insert" on public.asc_registrations for insert to anon,authenticated with check(true); end if;
