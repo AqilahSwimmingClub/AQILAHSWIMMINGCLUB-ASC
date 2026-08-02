@@ -1,5 +1,6 @@
 create table if not exists public.asc_training_programs (legacy_id text primary key, title text, level text, age_groups text[], program_date date, image_url text, content text, data jsonb not null default '{}'::jsonb, deleted_at timestamptz, updated_at timestamptz not null default now());
 alter table public.asc_training_programs enable row level security;
+grant select,insert,update,delete on public.asc_training_programs to anon,authenticated;
 do $$ begin
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_training_programs' and policyname='ASC training programs read') then create policy "ASC training programs read" on public.asc_training_programs for select to anon,authenticated using(true); end if;
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_training_programs' and policyname='ASC training programs insert') then create policy "ASC training programs insert" on public.asc_training_programs for insert to anon,authenticated with check(true); end if;

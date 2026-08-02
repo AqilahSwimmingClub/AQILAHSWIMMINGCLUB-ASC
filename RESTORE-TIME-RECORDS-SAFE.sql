@@ -1,5 +1,6 @@
 create table if not exists public.asc_time_records (legacy_id text primary key, stroke text, distance numeric, record_type text, event_level text, recorded_at date, time_value text, notes text, data jsonb not null default '{}'::jsonb, deleted_at timestamptz, updated_at timestamptz not null default now());
 alter table public.asc_time_records enable row level security;
+grant select,insert,update,delete on public.asc_time_records to anon,authenticated;
 do $$ begin
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_time_records' and policyname='ASC time records read') then create policy "ASC time records read" on public.asc_time_records for select to anon,authenticated using(true); end if;
  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_time_records' and policyname='ASC time records insert') then create policy "ASC time records insert" on public.asc_time_records for insert to anon,authenticated with check(true); end if;

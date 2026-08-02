@@ -2373,7 +2373,22 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
    box.innerHTML=isPdf?`<iframe src="${value}" title="Bukti Pembayaran"></iframe>`:`<img src="${value}" alt="Bukti Pembayaran">`;link.href=value;dialog.showModal()
  })
 
- document.querySelector('#logoutBtn')?.addEventListener('click',async()=>{if(unsubscribeRealtime){supabase.removeChannel(unsubscribeRealtime);unsubscribeRealtime=null}await clearCurrentPushDevice();clearActiveSession();role='';parentAthleteId='';coachId='';currentPage='dashboard';syncStatus='Siap';document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open');render()});const sidebar=document.querySelector('.sidebar');const sidebarBackdrop=document.querySelector('.sidebar-backdrop');const closeMobileSidebar=()=>{sidebar?.classList.remove('show');sidebarBackdrop?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')};const openMobileSidebar=()=>{sidebar?.classList.add('show');sidebarBackdrop?.classList.add('show');document.body.classList.add('mobile-menu-open');document.documentElement.classList.add('mobile-menu-open')};const toggleMobileSidebar=()=>sidebar?.classList.contains('show')?closeMobileSidebar():openMobileSidebar();document.querySelector('#menuBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});document.querySelector('#moreNavBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});sidebarBackdrop?.addEventListener('click',closeMobileSidebar);window.addEventListener('resize',()=>{const mobileLayout=window.matchMedia('(max-width:767px), (min-width:768px) and (max-width:1100px) and (orientation:portrait), (orientation:landscape) and (max-width:1100px) and (max-height:650px)').matches;if(!mobileLayout)closeMobileSidebar()});document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{const d=b.closest('dialog');d?.close();setTimeout(finishDeferredRemoteRender,0)});document.querySelectorAll('dialog').forEach(d=>d.addEventListener('close',()=>setTimeout(finishDeferredRemoteRender,0)))
+ document.querySelector('#logoutBtn')?.addEventListener('click',async()=>{if(unsubscribeRealtime){supabase.removeChannel(unsubscribeRealtime);unsubscribeRealtime=null}await clearCurrentPushDevice();clearActiveSession();role='';parentAthleteId='';coachId='';currentPage='dashboard';syncStatus='Siap';document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open');render()});const sidebar=document.querySelector('.sidebar');const sidebarBackdrop=document.querySelector('.sidebar-backdrop');const closeMobileSidebar=()=>{sidebar?.classList.remove('show');sidebarBackdrop?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')};const openMobileSidebar=()=>{sidebar?.classList.add('show');sidebarBackdrop?.classList.add('show');document.body.classList.add('mobile-menu-open');document.documentElement.classList.add('mobile-menu-open')};const toggleMobileSidebar=()=>sidebar?.classList.contains('show')?closeMobileSidebar():openMobileSidebar();document.querySelector('#menuBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});document.querySelector('#moreNavBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});sidebarBackdrop?.addEventListener('click',closeMobileSidebar);if(!window.__ascResizeHandlerBound){window.__ascResizeHandlerBound=true;window.addEventListener('resize',()=>{const mobileLayout=window.matchMedia('(max-width:767px), (min-width:768px) and (max-width:1100px) and (orientation:portrait), (orientation:landscape) and (max-width:1100px) and (max-height:650px)').matches;if(!mobileLayout){document.querySelector('.sidebar')?.classList.remove('show');document.querySelector('.sidebar-backdrop')?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')}})}document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{const d=b.closest('dialog');d?.close();setTimeout(finishDeferredRemoteRender,0)});document.querySelectorAll('dialog').forEach(d=>d.addEventListener('close',()=>setTimeout(finishDeferredRemoteRender,0)))
+ document.querySelector('#parentProfileForm')?.addEventListener('submit',async e=>{
+   e.preventDefault();if(role!=='parent')return
+   const athlete=parentAthlete(),form=e.currentTarget,f=new FormData(form),error=document.querySelector('#parentProfileError')
+   try{
+     setFormBusy(form,true,'Mengunggah dan menyimpan...')
+     const upload=async(name,type,current)=>{const file=f.get(name);return file?.size?registrationUpload(file,type,`${athlete.id}/profile`):current||''}
+     athlete.parentPhone=String(f.get('parentPhone')||'').trim();athlete.parentWhatsapp=athlete.parentPhone;athlete.schoolName=String(f.get('schoolName')||'').trim()
+     athlete.familyCard=await upload('familyCard','family-card',athlete.familyCard)
+     athlete.birthCertificate=await upload('birthCertificate','birth-certificate',athlete.birthCertificate)
+     const photo=f.get('photo');if(photo?.size)athlete.photo=await imageData(photo,500,'parent-profile')
+     athlete.profileUpdatedAt=new Date().toISOString();athlete.profileUpdatedBy=`parent:${athlete.id}`
+     await commitCriticalRecord('athletes',athlete.id);alert('Profil atlet berhasil diperbarui dan langsung tersinkron ke Admin.');render()
+   }catch(err){console.error('Supabase profil atlet gagal diperbarui:',err);if(error)error.textContent=err.message||'Profil gagal disimpan.'}
+   finally{setFormBusy(form,false)}
+ })
  document.querySelectorAll('[data-edit-registration]').forEach(b=>b.onclick=()=>{
    const r=state.pendingRegistrations.find(x=>x.id===b.dataset.editRegistration),d=document.querySelector('#registrationEditDialog'),f=document.querySelector('#registrationEditForm')
    if(!r||!d||!f)return
@@ -2531,21 +2546,6 @@ function setupPwaInstall(){
     event.preventDefault()
     deferredInstallPrompt=event
     button.classList.add('show')
-  })
-  document.querySelector('#parentProfileForm')?.addEventListener('submit',async e=>{
-    e.preventDefault();if(role!=='parent')return
-    const athlete=parentAthlete(),form=e.currentTarget,f=new FormData(form),error=document.querySelector('#parentProfileError')
-    try{
-      setFormBusy(form,true,'Mengunggah dan menyimpan...')
-      const upload=async(name,type,current)=>{const file=f.get(name);return file?.size?registrationUpload(file,type,`${athlete.id}/profile`):current||''}
-      athlete.parentPhone=String(f.get('parentPhone')||'').trim();athlete.parentWhatsapp=athlete.parentPhone;athlete.schoolName=String(f.get('schoolName')||'').trim()
-      athlete.familyCard=await upload('familyCard','family-card',athlete.familyCard)
-      athlete.birthCertificate=await upload('birthCertificate','birth-certificate',athlete.birthCertificate)
-      const photo=f.get('photo');if(photo?.size)athlete.photo=await imageData(photo,500,'parent-profile')
-      athlete.profileUpdatedAt=new Date().toISOString();athlete.profileUpdatedBy=`parent:${athlete.id}`
-      await commitCriticalRecord('athletes',athlete.id);alert('Profil atlet berhasil diperbarui dan langsung tersinkron ke Admin.');render()
-    }catch(err){console.error('Supabase profil atlet gagal diperbarui:',err);if(error)error.textContent=err.message||'Profil gagal disimpan.'}
-    finally{setFormBusy(form,false)}
   })
   button.addEventListener('click',async()=>{
     if(!deferredInstallPrompt)return

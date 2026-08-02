@@ -73,3 +73,12 @@ begin
   raise notice 'Pemulihan selesai. Record lama yang sudah ada tetap dipertahankan.';
 end
 $$;
+
+alter table public.asc_athletes enable row level security;
+grant select,insert,update,delete on public.asc_athletes to anon,authenticated;
+do $$ begin
+  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_athletes' and policyname='ASC athletes read') then create policy "ASC athletes read" on public.asc_athletes for select to anon,authenticated using(true); end if;
+  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_athletes' and policyname='ASC athletes insert') then create policy "ASC athletes insert" on public.asc_athletes for insert to anon,authenticated with check(true); end if;
+  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_athletes' and policyname='ASC athletes update') then create policy "ASC athletes update" on public.asc_athletes for update to anon,authenticated using(true) with check(true); end if;
+  if not exists(select 1 from pg_policies where schemaname='public' and tablename='asc_athletes' and policyname='ASC athletes delete') then create policy "ASC athletes delete" on public.asc_athletes for delete to anon,authenticated using(true); end if;
+end $$;
