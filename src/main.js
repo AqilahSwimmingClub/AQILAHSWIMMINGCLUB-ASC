@@ -156,6 +156,11 @@ const ROW_COLLECTIONS = {
     table:'asc_invoices',
     toRow:item=>({legacy_id:String(item.id||createId()),athlete_id:item.athleteId||null,athlete_name:item.athleteName||null,invoice_type:item.type||null,title:item.title||null,amount:Number(item.amount||0),due_date:/^\d{4}-\d{2}-\d{2}$/.test(String(item.dueDate||''))?item.dueDate:null,status:item.status||'unpaid',description:item.description||null,data:item,deleted_at:null,updated_at:new Date().toISOString()}),
     trueEmptyFallback:true
+  },
+  competitions: {
+    table:'asc_competitions',
+    toRow:item=>({legacy_id:String(item.id||createId()),title:item.title||null,event_date:/^\d{4}-\d{2}-\d{2}$/.test(String(item.eventDate||''))?item.eventDate:null,location:item.location||null,registration_deadline:/^\d{4}-\d{2}-\d{2}$/.test(String(item.registrationDeadline||''))?item.registrationDeadline:null,organizer:item.organizer||null,fee_per_race:Number(item.feePerRace||0),flyer_url:item.flyer||null,description:item.description||null,data:item,deleted_at:null,updated_at:new Date().toISOString()}),
+    trueEmptyFallback:true
   }
 }
 const ROW_COLLECTION_KEYS=Object.keys(ROW_COLLECTIONS)
@@ -230,12 +235,12 @@ async function loadRowCollections(){
       // mengganti data atlet yang masih ada dengan array kosong.
       return
     }
-    if(key==='invoices'){
-      const tombstones=state.__tombstones?.invoices||{}
+    if(['invoices','competitions'].includes(key)){
+      const tombstones=state.__tombstones?.[key]||{}
       const safeFallback=[...new Map(fallback.filter(item=>!tombstones[String(item?.id||'')]).map(item=>[String(item?.id||''),item])).values()].filter(item=>item?.id)
-      if(!error&&items.length)state.invoices=items
-      else if(!error&&Number(totalCount)>0)state.invoices=[]
-      else if(safeFallback.length)state.invoices=structuredClone(safeFallback)
+      if(!error&&items.length)state[key]=items
+      else if(!error&&Number(totalCount)>0)state[key]=[]
+      else if(safeFallback.length)state[key]=structuredClone(safeFallback)
       return
     }
     if(!error&&items.length)state[key]=items
@@ -511,6 +516,7 @@ const MODULE_CACHE_KEYS={
   auditTrail:'asc_cache_audit_trail',versionHistory:'asc_cache_version_history',parentReminders:'asc_cache_parent_reminders'
 }
 const INVOICE_TOMBSTONE_CACHE_KEY='asc_cache_invoice_tombstones'
+const COMPETITION_TOMBSTONE_CACHE_KEY='asc_cache_competition_tombstones'
 function cacheSafeClone(value){
   if(Array.isArray(value))return value.map(cacheSafeClone)
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,cacheSafeClone(item)]))
@@ -562,6 +568,7 @@ function saveLocal(){
   safeLocalStorageSet('aqilah_sc_data',JSON.stringify(localMetadata()))
   saveModuleCaches()
   safeLocalStorageSet(INVOICE_TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones?.invoices||{})))
+  safeLocalStorageSet(COMPETITION_TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones?.competitions||{})))
 }
 function loadLocal(){
   let stored=null
@@ -575,6 +582,7 @@ function loadLocal(){
   loadModuleCachesIntoState(stored?.storageVersion===2?null:stored)
   state.__tombstones ||= {}
   try{state.__tombstones.invoices=JSON.parse(localStorage.getItem(INVOICE_TOMBSTONE_CACHE_KEY)||'{}')}catch(error){console.warn('Cache tombstone tagihan tidak dapat dibaca.',error)}
+  try{state.__tombstones.competitions=JSON.parse(localStorage.getItem(COMPETITION_TOMBSTONE_CACHE_KEY)||'{}')}catch(error){console.warn('Cache tombstone event tidak dapat dibaca.',error)}
   normalize()
   compactLegacySafetySnapshots()
   saveLocal()
@@ -935,6 +943,7 @@ function subscribeRealtime() {
     .on('postgres_changes',{event:'*',schema:'public',table:'asc_registrations'},payload=>handleRowRealtime('asc_registrations',payload))
     .on('postgres_changes',{event:'*',schema:'public',table:'asc_notifications'},payload=>handleRowRealtime('asc_notifications',payload))
     .on('postgres_changes',{event:'*',schema:'public',table:'asc_finance_transactions'},payload=>handleRowRealtime('asc_finance_transactions',payload))
+    .on('postgres_changes',{event:'*',schema:'public',table:'asc_competitions'},payload=>handleRowRealtime('asc_competitions',payload))
     .subscribe(status=>{
       if(status==='SUBSCRIBED'){
         realtimeActive=true
@@ -1109,10 +1118,25 @@ async function deleteInvoiceSafely(id){
   stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
   return true
 }
+async function deleteCompetitionSafely(id){
+  const index=state.competitions.findIndex(item=>String(item?.id)===String(id))
+  if(index<0)return false
+  if(!navigator.onLine)throw new Error('Event belum dihapus karena perangkat sedang offline. Sambungkan internet lalu coba kembali.')
+  await softDeleteDedicatedRecord('competitions',id)
+  const record=state.competitions[index]
+  state.__tombstones ||= {};state.__tombstones.competitions ||= {}
+  state.__tombstones.competitions[String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  state.competitions.splice(index,1)
+  addAudit('Hapus','competitions',id,record?.title||'')
+  addVersionSnapshot('Hapus competitions')
+  stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
+  return true
+}
 async function deleteDedicatedSafely(collection,id){
   if(collection==='athletes')return deleteAthleteSafely(id)
   if(collection==='attendance')return deleteAttendanceSafely(id)
   if(collection==='invoices')return deleteInvoiceSafely(id)
+  if(collection==='competitions')return deleteCompetitionSafely(id)
   const list=state[collection]
   if(!Array.isArray(list))return false
   const index=list.findIndex(item=>String(item?.id)===String(id))
@@ -2099,17 +2123,18 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
      createdAt:new Date().toISOString()
    }
    state.competitions.push(competition)
-   addAdminNotification('competition','Event perlombaan baru',String(f.get('title')||''),'competitions')
-   queueSave()
-   sendPushNotification({target:'all',title:'Informasi Lomba Baru',message:`${competition.title} telah ditambahkan. Silakan lihat detailnya.`,page:'competitions',eventId:competition.id})
-   document.querySelector('#competitionDialog')?.close()
-   render()
- })
- document.querySelectorAll('[data-delete-competition]').forEach(b=>b.onclick=()=>{
+   try{
+     await commitCriticalRecord('competitions',competition.id)
+     addAdminNotification('competition','Event perlombaan baru',competition.title,'competitions')
+     sendPushNotification({target:'all',title:'Informasi Lomba Baru',message:`${competition.title} telah ditambahkan. Silakan lihat detailnya.`,page:'competitions',eventId:competition.id})
+     document.querySelector('#competitionDialog')?.close();render()
+   }catch(error){state.competitions=state.competitions.filter(item=>item.id!==competition.id);saveLocal();console.error('Supabase asc_competitions gagal membuat event:',error);alert(error.message||'Event belum tersimpan di Supabase.')}
+  })
+ document.querySelectorAll('[data-delete-competition]').forEach(b=>b.addEventListener('click',async()=>{
    if(role!=='admin')return
    if(!confirm('Hapus event perlombaan ini?'))return
-   softDelete('competitions',b.dataset.deleteCompetition)
- })
+   try{await deleteDedicatedSafely('competitions',b.dataset.deleteCompetition)}catch(error){console.error('Supabase asc_competitions gagal menghapus event:',error);alert(error.message||'Event belum dihapus dari Supabase.')}
+ }))
  document.querySelectorAll('[data-view-flyer]').forEach(b=>b.onclick=()=>{
    const event=state.competitions.find(e=>e.id===b.dataset.viewFlyer)
    if(!event?.flyer)return
