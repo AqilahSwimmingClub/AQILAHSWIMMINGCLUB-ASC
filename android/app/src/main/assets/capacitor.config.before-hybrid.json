@@ -1,0 +1,12 @@
+{
+	"appId": "com.aqilahswimmingclub.app",
+	"appName": "AQILAH Swimming Club",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	},
+	"android": {
+		"allowMixedContent": false,
+		"backgroundColor": "#061d3b"
+	}
+}
