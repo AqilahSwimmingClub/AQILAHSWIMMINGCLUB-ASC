@@ -4,6 +4,10 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -17,6 +21,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.ValueCallback;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
@@ -29,8 +34,13 @@ import com.google.firebase.messaging.FirebaseMessaging;
 
 import org.json.JSONObject;
 
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,20 +48,27 @@ import java.util.concurrent.Executors;
 public class MainActivity extends AppCompatActivity {
     private static final String PRODUCTION_URL = "https://aqilahswimmingclub.vercel.app";
     private static final String LOCAL_URL = "https://appassets.androidplatform.net/assets/public/index.html";
-    private static final Set<String> INTERNAL_HOSTS = Set.of(
+    private static final Set<String> INTERNAL_HOSTS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "aqilahswimmingclub.vercel.app",
             "nykenupjktgmsotfzrjj.supabase.co",
             "appassets.androidplatform.net"
-    );
+    )));
 
     private final ExecutorService connectivityExecutor = Executors.newSingleThreadExecutor();
     private WebView webView;
     private boolean localFallback;
     private boolean pageLoadFailed;
     private long lastResumeCheck;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private ValueCallback<Uri[]> fileChooserCallback;
 
-    static MainActivity current;
+    private static WeakReference<MainActivity> current = new WeakReference<>(null);
     static boolean foreground;
+
+    static MainActivity getCurrent() {
+        return current.get();
+    }
 
     public final class ASCAndroidBridge {
         @JavascriptInterface
@@ -71,6 +88,15 @@ public class MainActivity extends AppCompatActivity {
                     new ActivityResultContracts.RequestPermission(),
                     isGranted -> { });
 
+    private final ActivityResultLauncher<Intent> filePickerLauncher =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (fileChooserCallback == null) return;
+                Uri[] selected = WebChromeClient.FileChooserParams.parseResult(
+                        result.getResultCode(), result.getData());
+                fileChooserCallback.onReceiveValue(selected);
+                fileChooserCallback = null;
+            });
+
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,7 +104,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         webView = findViewById(R.id.webView);
-        current = this;
+        current = new WeakReference<>(this);
         webView.addJavascriptInterface(new ASCAndroidBridge(), "ASCAndroid");
 
         WebSettings settings = webView.getSettings();
@@ -162,7 +188,26 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(
+                    WebView webView,
+                    ValueCallback<Uri[]> callback,
+                    FileChooserParams params) {
+                if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
+                fileChooserCallback = callback;
+                try {
+                    filePickerLauncher.launch(params.createIntent());
+                    return true;
+                } catch (Exception error) {
+                    fileChooserCallback.onReceiveValue(null);
+                    fileChooserCallback = null;
+                    return false;
+                }
+            }
+        });
+        registerNetworkCallback();
+        AQILAHFirebaseMessagingService.ensureNotificationChannel(this);
         loadProductionWebsite();
         requestNotificationPermission();
 
@@ -179,7 +224,7 @@ public class MainActivity extends AppCompatActivity {
         if (uri == null || uri.getScheme() == null) return true;
         if (!"https".equalsIgnoreCase(uri.getScheme())) return true;
         String host = uri.getHost();
-        if (host != null && INTERNAL_HOSTS.contains(host.toLowerCase())) return false;
+        if (host != null && INTERNAL_HOSTS.contains(host.toLowerCase(Locale.ROOT))) return false;
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, uri));
         } catch (Exception ignored) { }
@@ -243,6 +288,21 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void registerNetworkCallback() {
+        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                if (localFallback && webView != null) webView.post(MainActivity.this::loadProductionWebsite);
+            }
+        };
+        NetworkRequest request = new NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build();
+        connectivityManager.registerNetworkCallback(request, networkCallback);
+    }
+
     void deliverFcmToken(String token) {
         if (token == null || token.isEmpty() || webView == null) return;
         String quoted = JSONObject.quote(token);
@@ -287,7 +347,16 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         connectivityExecutor.shutdownNow();
-        if (current == this) current = null;
+        if (connectivityManager != null && networkCallback != null) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            } catch (IllegalArgumentException ignored) { }
+        }
+        if (fileChooserCallback != null) {
+            fileChooserCallback.onReceiveValue(null);
+            fileChooserCallback = null;
+        }
+        if (current.get() == this) current.clear();
         super.onDestroy();
     }
 
