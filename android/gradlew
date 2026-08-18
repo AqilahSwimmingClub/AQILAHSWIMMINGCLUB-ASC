@@ -1,3 +1,8 @@
 #!/usr/bin/env sh
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-exec java -cp "$DIR/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
+# Sebelumnya java dipanggil langsung dari PATH sehingga JAVA_HOME diabaikan.
+JAVACMD=java
+if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+  JAVACMD="$JAVA_HOME/bin/java"
+fi
+exec "$JAVACMD" -cp "$DIR/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
