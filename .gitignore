@@ -12,6 +12,7 @@ android/keystore.properties
 android/.gradle/
 android/.idea/
 android/**/build/
+android/app/release/
 android/icon-launcher.before-hybrid.zip
 src/*.before-*.js
 src/*.stage2-backup
