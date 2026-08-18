@@ -75,21 +75,29 @@ async function clearCurrentPushDevice(){
 }
 async function sendPushNotification(payload={}){
   try{
+    // Notifikasi dalam aplikasi dibuat terpisah dari pengiriman FCM. Bila satu
+    // penerima gagal disimpan, penerima lain dan notifikasi mengambang tetap terkirim.
     if(payload.inApp!==false&&payload.eventId){
-      let recipients=[]
-      if(payload.target==='parent')recipients=[{recipientRole:'parent',recipientId:payload.athleteId,athleteId:payload.athleteId,page:payload.deepLinkParent||payload.deepLink||payload.page}]
-      else if(payload.target==='coach')recipients=[{recipientRole:'coach',recipientId:payload.coachId,coachId:payload.coachId,page:payload.deepLinkCoach||payload.deepLink||payload.page}]
-      else if(payload.target==='all'){
-        const categories=Array.isArray(payload.trainingCategories)?payload.trainingCategories:[],groups=Array.isArray(payload.ageGroups)?payload.ageGroups:[]
-        const parents=(state.athletes||[]).filter(a=>(!categories.length||categories.includes(a.trainingCategory))&&(!groups.length||groups.some(g=>(a.trainingGroups||[a.ageGroup]).includes(g)))).map(a=>({recipientRole:'parent',recipientId:a.id,athleteId:a.id,page:payload.deepLinkParent||payload.deepLink||payload.page}))
-        const coaches=(state.coaches||[]).filter(c=>c.active!==false).map(c=>({recipientRole:'coach',recipientId:c.id,coachId:c.id,page:payload.deepLinkCoach||payload.deepLink||payload.page}))
-        recipients=[...parents,...coaches]
-      }
-      for(const recipient of recipients){
-        if(!recipient.recipientId)continue
-        const existing=[...(state.notifications||[]),...(state.coachNotifications||[])].some(n=>String(n.referenceId||'')===String(payload.eventId)&&n.type===(payload.type||'push_notification')&&String(n.recipientId||n.coachId||'')===String(recipient.recipientId))
-        if(!existing)await upsertTargetedNotification({...recipient,title:payload.title||'AQILAH Swimming Club',message:payload.message||'Ada informasi baru.',type:payload.type||'push_notification',referenceType:payload.referenceType||'push_event',referenceId:payload.eventId})
-      }
+      try{
+        let recipients=[]
+        if(payload.target==='parent')recipients=[{recipientRole:'parent',recipientId:payload.athleteId,athleteId:payload.athleteId,page:payload.deepLinkParent||payload.deepLink||payload.page}]
+        else if(payload.target==='coach')recipients=[{recipientRole:'coach',recipientId:payload.coachId,coachId:payload.coachId,page:payload.deepLinkCoach||payload.deepLink||payload.page}]
+        else if(payload.target==='all'){
+          const categories=Array.isArray(payload.trainingCategories)?payload.trainingCategories:[],groups=Array.isArray(payload.ageGroups)?payload.ageGroups:[]
+          const parents=(state.athletes||[]).filter(a=>(!categories.length||categories.includes(a.trainingCategory))&&(!groups.length||groups.some(g=>(a.trainingGroups||[a.ageGroup]).includes(g)))).map(a=>({recipientRole:'parent',recipientId:a.id,athleteId:a.id,page:payload.deepLinkParent||payload.deepLink||payload.page}))
+          const coaches=(state.coaches||[]).filter(c=>c.active!==false).map(c=>({recipientRole:'coach',recipientId:c.id,coachId:c.id,page:payload.deepLinkCoach||payload.deepLink||payload.page}))
+          recipients=[...parents,...coaches]
+        }
+        const type=payload.type||'push_notification'
+        const pending=recipients.filter(recipient=>{
+          if(!recipient.recipientId)return false
+          return ![...(state.notifications||[]),...(state.coachNotifications||[])].some(n=>String(n.referenceId||'')===String(payload.eventId)&&n.type===type&&String(n.recipientId||n.coachId||'')===String(recipient.recipientId))
+        })
+        const results=await Promise.allSettled(pending.map(recipient=>upsertTargetedNotification({...recipient,title:payload.title||'AQILAH Swimming Club',message:payload.message||'Ada informasi baru.',type,referenceType:payload.referenceType||'push_event',referenceId:payload.eventId})))
+        results.forEach(result=>{if(result.status==='rejected')console.error('Notifikasi dalam aplikasi gagal disimpan:',result.reason)})
+        // Segarkan lonceng/badge tanpa mengganggu form atau dialog yang sedang dibuka.
+        if(results.some(result=>result.status==='fulfilled'))renderRemoteUpdateSafely()
+      }catch(error){console.error('Notifikasi dalam aplikasi gagal dibuat:',error)}
     }
     const {data,error}=await supabase.functions.invoke('send-push',{body:{clubId:CLUB_ID,...payload,body:payload.body||payload.message,deepLink:payload.deepLink||payload.page||'dashboard',referenceId:payload.referenceId||payload.eventId||''}})
     if(error)throw error
@@ -148,7 +156,10 @@ const ROW_COLLECTIONS = {
   },
   pendingRegistrations: {
     table:'asc_registrations',
-    toRow:item=>({legacy_id:String(item.id||createId()),data:item,deleted_at:null,updated_at:new Date().toISOString()})
+    // deleted_at tidak pernah dipaksa null lagi supaya penyimpanan ulang tidak
+    // menghidupkan kembali pendaftar yang sudah dihapus di sumber datanya.
+    toRow:item=>({legacy_id:String(item.id||createId()),data:item,deleted_at:item.deletedAt||null,updated_at:new Date().toISOString()}),
+    trueEmptyFallback:true
   },
   notifications: {
     table:'asc_notifications',
@@ -261,7 +272,7 @@ async function loadRowCollections(){
       // mengganti data atlet yang masih ada dengan array kosong.
       return
     }
-    if(['invoices','competitions'].includes(key)){
+    if(['invoices','competitions','pendingRegistrations'].includes(key)){
       const tombstones=state.__tombstones?.[key]||{}
       const safeFallback=[...new Map(fallback.filter(item=>!tombstones[String(item?.id||'')]).map(item=>[String(item?.id||''),item])).values()].filter(item=>item?.id)
       if(!error&&items.length)state[key]=items
@@ -270,7 +281,11 @@ async function loadRowCollections(){
       return
     }
     if(!error&&items.length)state[key]=items
-    else if(fallback.length)state[key]=structuredClone(fallback)
+    else{
+      // Fallback legacy disaring nisan supaya tidak menghidupkan data terhapus.
+      const safeFallback=withoutTombstoned(key,fallback)
+      if(safeFallback.length)state[key]=structuredClone(safeFallback)
+    }
     // Bila tabel dan fallback kosong, cache perangkat tidak pernah diganti [].
   })
   normalize()
@@ -285,10 +300,16 @@ function isBundledDefaultAthleteList(items){
 function applyRemotePayloadPreservingDedicated(payload){
   const previous=state
   const next={...structuredClone(defaultState),...(payload&&typeof payload==='object'?payload:{})}
+  // Nisan penghapusan perangkat ini tidak boleh hilang saat payload lama masuk.
+  next.__tombstones=mergeTombstoneMaps(previous?.__tombstones,next.__tombstones)
   DEDICATED_COLLECTION_KEYS.forEach(key=>{
-    if((!Array.isArray(next[key])||next[key].length===0)&&Array.isArray(previous?.[key])&&previous[key].length){
-      next[key]=structuredClone(previous[key])
-    }
+    // saveRemote() sengaja tidak pernah memperbarui koleksi ini di class_app_data,
+    // jadi isinya adalah salinan beku sebelum migrasi. Data hidup selalu datang
+    // dari tabelnya sendiri lewat loadRowCollections(), sehingga payload legacy
+    // tidak boleh menimpa apa pun dan tidak boleh menghidupkan data terhapus.
+    const localList=Array.isArray(previous?.[key])?previous[key]:null
+    if(localList&&localList.length){next[key]=structuredClone(localList);return}
+    if(Array.isArray(next[key]))next[key]=withoutTombstoned(key,next[key],next.__tombstones)
   })
   if(stableSerialize(next)===stableSerialize(previous))return false
   state=next
@@ -538,6 +559,7 @@ function normalize() {
   state.auditTrail ||= []
   state.versionHistory ||= []
   state.__tombstones ||= {}
+  purgeTombstonedRecords()
   state.timeRecords ||= []; state.trainingPrograms ||= []; state.attendance ||= []; state.schedules ||= []; state.payments ||= []; state.competitions ||= []; state.competitionRegistrations ||= []; state.announcements ||= []
 }
 const MODULE_CACHE_KEYS={
@@ -552,6 +574,54 @@ const MODULE_CACHE_KEYS={
 }
 const INVOICE_TOMBSTONE_CACHE_KEY='asc_cache_invoice_tombstones'
 const COMPETITION_TOMBSTONE_CACHE_KEY='asc_cache_competition_tombstones'
+// Nisan penghapusan untuk SELURUH koleksi. Sebelumnya hanya tagihan dan event
+// yang disimpan, sehingga penghapusan menu lain hilang begitu halaman dimuat
+// ulang dan payload legacy class_app_data menghidupkannya kembali.
+const TOMBSTONE_CACHE_KEY='asc_cache_tombstones'
+function tombstonesFor(collection,source=state.__tombstones){
+  const graves=source?.[collection]
+  return graves&&typeof graves==='object'?graves:{}
+}
+function isTombstoned(collection,id,source=state.__tombstones){
+  return Boolean(tombstonesFor(collection,source)[String(id)])
+}
+function markTombstone(collection,id){
+  state.__tombstones ||= {}
+  state.__tombstones[collection] ||= {}
+  state.__tombstones[collection][String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+}
+function clearTombstone(collection,id){
+  const graves=state.__tombstones?.[collection]
+  if(graves)delete graves[String(id)]
+}
+function mergeTombstoneMaps(...sources){
+  const merged={}
+  sources.forEach(source=>{
+    if(!source||typeof source!=='object')return
+    Object.entries(source).forEach(([collection,graves])=>{
+      if(!graves||typeof graves!=='object')return
+      merged[collection]={...(merged[collection]||{}),...graves}
+    })
+  })
+  return merged
+}
+function withoutTombstoned(collection,list,source=state.__tombstones){
+  const graves=tombstonesFor(collection,source)
+  if(!Array.isArray(list)||!Object.keys(graves).length)return list
+  return list.filter((item,index)=>!graves[String(item?.id||'')]&&!graves[recordIdentity(item,index)])
+}
+// Satu titik penyaring: data yang sudah dihapus tidak pernah boleh bertahan di
+// state, dari sumber mana pun (cache lokal, payload legacy, atau realtime).
+function purgeTombstonedRecords(){
+  const tombstones=state.__tombstones
+  if(!tombstones||typeof tombstones!=='object')return
+  Object.keys(tombstones).forEach(collection=>{
+    const list=state[collection]
+    if(!Array.isArray(list)||!list.length)return
+    const kept=withoutTombstoned(collection,list)
+    if(kept.length!==list.length)state[collection]=kept
+  })
+}
 function cacheSafeClone(value){
   if(Array.isArray(value))return value.map(cacheSafeClone)
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,cacheSafeClone(item)]))
@@ -602,6 +672,7 @@ function saveLocal(){
   // aqilah_sc_data hanya metadata kecil. Data operasional disimpan per modul.
   safeLocalStorageSet('aqilah_sc_data',JSON.stringify(localMetadata()))
   saveModuleCaches()
+  safeLocalStorageSet(TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones||{})))
   safeLocalStorageSet(INVOICE_TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones?.invoices||{})))
   safeLocalStorageSet(COMPETITION_TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones?.competitions||{})))
 }
@@ -616,8 +687,11 @@ function loadLocal(){
   // Migrasi satu kali dari format lama yang masih berisi seluruh state.
   loadModuleCachesIntoState(stored?.storageVersion===2?null:stored)
   state.__tombstones ||= {}
-  try{state.__tombstones.invoices=JSON.parse(localStorage.getItem(INVOICE_TOMBSTONE_CACHE_KEY)||'{}')}catch(error){console.warn('Cache tombstone tagihan tidak dapat dibaca.',error)}
-  try{state.__tombstones.competitions=JSON.parse(localStorage.getItem(COMPETITION_TOMBSTONE_CACHE_KEY)||'{}')}catch(error){console.warn('Cache tombstone event tidak dapat dibaca.',error)}
+  try{state.__tombstones=mergeTombstoneMaps(state.__tombstones,JSON.parse(localStorage.getItem(TOMBSTONE_CACHE_KEY)||'{}'))}catch(error){console.warn('Cache tombstone tidak dapat dibaca.',error)}
+  // Dua kunci lama tetap dibaca agar penghapusan yang sudah tercatat sebelum
+  // pembaruan ini tidak hilang.
+  try{state.__tombstones.invoices=mergeTombstoneMaps({invoices:state.__tombstones.invoices},{invoices:JSON.parse(localStorage.getItem(INVOICE_TOMBSTONE_CACHE_KEY)||'{}')}).invoices||{}}catch(error){console.warn('Cache tombstone tagihan tidak dapat dibaca.',error)}
+  try{state.__tombstones.competitions=mergeTombstoneMaps({competitions:state.__tombstones.competitions},{competitions:JSON.parse(localStorage.getItem(COMPETITION_TOMBSTONE_CACHE_KEY)||'{}')}).competitions||{}}catch(error){console.warn('Cache tombstone event tidak dapat dibaca.',error)}
   normalize()
   compactLegacySafetySnapshots()
   saveLocal()
@@ -1007,7 +1081,7 @@ function subscribeRealtime() {
   // Polling hanya menjadi cadangan selama kanal realtime belum aktif/gagal.
   startFallbackPolling()
 }
-window.addEventListener('online',()=>{syncStatus='Internet tersambung, menyinkronkan...';updateSync();flushFinanceOfflineQueue();if(pendingRemoteSave)saveRemote();else loadRemote({renderAfter:true})})
+window.addEventListener('online',()=>{syncStatus='Internet tersambung, menyinkronkan...';updateSync();flushDeleteOfflineQueue();flushFinanceOfflineQueue();if(pendingRemoteSave)saveRemote();else loadRemote({renderAfter:true})})
 window.addEventListener('offline',()=>{syncStatus='Offline — perubahan tetap tersimpan di perangkat';updateSync()})
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&navigator.onLine){
@@ -1102,6 +1176,12 @@ async function verifyRemoteRecord(collection,id,timeoutMs=18000){
   return {verified:false,error:lastError}
 }
 async function commitCriticalRecord(collection,id){
+  // Penjaga terakhir: record yang sudah bernisan tidak boleh ditulis ulang ke
+  // sumber datanya, karena upsert akan mengembalikan deleted_at menjadi null.
+  if(isTombstoned(collection,id)){
+    console.warn(`${collection}:${id} sudah ditandai terhapus. Penyimpanan ulang dibatalkan.`)
+    return false
+  }
   if(DEDICATED_COLLECTION_KEYS.has(collection)){
     stampStateForSync();saveSafetySnapshot(state);saveLocal()
     if(!navigator.onLine)return false
@@ -1192,13 +1272,12 @@ async function deleteDedicatedSafely(collection,id){
   const index=list.findIndex(item=>String(item?.id)===String(id))
   if(index<0)return false
   const record=list[index]
-  state.__tombstones ||= {};state.__tombstones[collection] ||= {}
-  state.__tombstones[collection][String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  markTombstone(collection,id)
   list.splice(index,1)
   addAudit('Hapus',collection,id,record?.name||record?.title||record?.athleteName||'')
   addVersionSnapshot(`Hapus ${collection}`)
   stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
-  if(!navigator.onLine)return true
+  if(!navigator.onLine){queueOfflineDelete(collection,id);return true}
   await softDeleteDedicatedRecord(collection,id)
   return true
 }
@@ -1217,6 +1296,25 @@ function addAdminNotification(type,title,message,target){
 }
 function financeRecordId(direction,referenceType,referenceId){return `FIN-${direction}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-')}
 function normalizeFinanceCategory(value='LAINNYA'){const text=String(value).toUpperCase();if(text.includes('SPP'))return 'SPP';if(text.includes('LOMBA')||text.includes('COMPETITION'))return 'LOMBA';if(text.includes('PENDAFTAR'))return 'PENDAFTARAN';if(text.includes('GAJI')||text.includes('SALARY'))return 'GAJI';return text||'LAINNYA'}
+// Penghapusan saat offline dulu berhenti di perangkat saja: deleted_at tidak
+// pernah sampai ke Supabase, sehingga data muncul lagi di perangkat lain.
+const DELETE_OFFLINE_QUEUE_KEY='asc_delete_offline_queue'
+function deleteOfflineQueue(){try{const value=JSON.parse(localStorage.getItem(DELETE_OFFLINE_QUEUE_KEY)||'[]');return Array.isArray(value)?value:[]}catch{return []}}
+function queueOfflineDelete(collection,id){
+  safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify([...new Set([...deleteOfflineQueue(),`${collection}:${id}`])]))
+}
+async function flushDeleteOfflineQueue(){
+  if(!navigator.onLine)return
+  const pending=deleteOfflineQueue(),remaining=[]
+  for(const entry of pending){
+    const separator=String(entry).indexOf(':')
+    if(separator<0)continue
+    const collection=String(entry).slice(0,separator),id=String(entry).slice(separator+1)
+    if(!ROW_COLLECTIONS[collection])continue
+    try{await softDeleteDedicatedRecord(collection,id)}catch(error){remaining.push(entry);console.error(`Penghapusan ${entry} belum tersinkron:`,error)}
+  }
+  safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify(remaining))
+}
 const FINANCE_OFFLINE_QUEUE_KEY='asc_finance_offline_queue'
 function financeOfflineQueue(){try{return JSON.parse(localStorage.getItem(FINANCE_OFFLINE_QUEUE_KEY)||'[]')}catch{return []}}
 function queueFinanceOffline(id){safeLocalStorageSet(FINANCE_OFFLINE_QUEUE_KEY,JSON.stringify([...new Set([...financeOfflineQueue(),String(id)])]))}
@@ -1252,6 +1350,40 @@ async function upsertTargetedNotification({recipientRole,recipientId,athleteId='
   return item
 }
 function unreadNotifications(){return (state.notifications||[]).filter(n=>(n.notificationAudience||n.recipientRole||'admin')==='admin'&&!n.read).length}
+function notificationAudienceOf(n){return n?.notificationAudience||n?.recipientRole||'admin'}
+function notificationOwnerId(n){return String(n?.athleteId||n?.coachId||n?.recipientId||'')}
+function sortNotificationsNewestFirst(list){return list.slice().sort((a,b)=>String(b?.createdAt||'').localeCompare(String(a?.createdAt||'')))}
+function parentNotificationList(athleteId=parentAthleteId){
+  const owner=String(athleteId||'')
+  return sortNotificationsNewestFirst((state.notifications||[]).filter(n=>notificationAudienceOf(n)==='parent'&&(!owner||notificationOwnerId(n)===owner)))
+}
+function coachNotificationList(id=coachId){
+  const owner=String(id||'')
+  return sortNotificationsNewestFirst((state.coachNotifications||[]).filter(n=>!owner||String(n?.coachId||n?.recipientId||'')===owner))
+}
+function unreadParentNotifications(athleteId=parentAthleteId){return parentNotificationList(athleteId).filter(n=>!n.read).length}
+function unreadCoachNotifications(id=coachId){return coachNotificationList(id).filter(n=>!n.read).length}
+function unreadForCurrentRole(){return role==='admin'?unreadNotifications():role==='coach'?unreadCoachNotifications():role==='parent'?unreadParentNotifications():0}
+function notificationPageIdForRole(){return role==='admin'?'notifications':role==='coach'?'coachNotifications':'parentNotifications'}
+function notificationIcon(type=''){
+  const t=String(type||'')
+  if(/payment|invoice|salary|spp|gaji|tagihan/i.test(t))return 'Rp'
+  if(/attendance/i.test(t))return '✓'
+  if(/schedule/i.test(t))return '◷'
+  if(/competition/i.test(t))return '★'
+  if(/time_record/i.test(t))return '⏱'
+  if(/training_program|program/i.test(t))return '▣'
+  if(/announcement|pengumuman/i.test(t))return '◖'
+  return '🔔'
+}
+async function markNotificationRead(collection,item){
+  if(!item||item.read)return false
+  item.read=true
+  item.readAt=new Date().toISOString()
+  item.updatedAt=item.readAt
+  try{await commitCriticalRecord(collection,item.id)}catch(error){console.error('Status baca notifikasi gagal disimpan:',error)}
+  return true
+}
 function paymentStatusLabel(status){return status==='approved'?'Lunas':status==='rejected'?'Ditolak':'Menunggu Konfirmasi'}
 function paymentTypeLabel(type){return type==='competition'?'Pembayaran Lomba':'Pembayaran SPP'}
 
@@ -1431,6 +1563,7 @@ function loginPage() {
         paymentAccountName:'FAHMI DJAWAS',
         paymentAccountNumber:'1560020198356'
       }
+      clearTombstone('pendingRegistrations',registration.id)
       state.pendingRegistrations.push(registration)
       addAdminNotification('registration','Pendaftar Atlet Baru',`${registration.name} mengirim formulir pendaftaran.`,'registrations')
       await commitCriticalRecord('pendingRegistrations',registration.id)
@@ -1466,11 +1599,12 @@ function loginPage() {
 
 const adminMenu=[['dashboard','Dashboard','⌂'],['notifications','Notifikasi','🔔'],['athletes','Data Atlet','♟'],['registrations','Pendaftar Baru','✚'],['coaches','Pelatih','♜'],['coachSalaries','Gaji Pelatih','Rp'],['development','Perkembangan Atlet','◆'],['attendance','Absensi','✓'],['trainingPrograms','Program Latihan','▣'],['timeRecords','Catatan Waktu','⏱'],['schedules','Jadwal Latihan','◷'],['competitions','Kompetisi / Event','★'],['competitionRegistrations','Pendaftaran Lomba','✓'],['competitionPayments','Pembayaran Lomba','Rp'],['payments','Pembayaran SPP','Rp'],['invoices','Tagihan','▦'],['announcements','Pengumuman','◖'],['reports','Laporan','▤'],['settings','Pengaturan','⚙']]
 const coachMenu=[['coachDashboard','Dashboard','⌂'],['coachAthletes','Atlet Binaan','♟'],['trainingPrograms','Program Latihan','▣'],['coachAttendance','Absensi','✓'],['coachTimeRecords','Catatan Waktu','⏱'],['coachDevelopment','Evaluasi Atlet','◆'],['coachSchedules','Jadwal Latihan','◷'],['coachAnnouncements','Pengumuman','◖'],['coachNotifications','Notifikasi','🔔'],['coachSalaryHistory','Riwayat Gaji','Rp'],['coachSettings','Pengaturan','⚙']]
-const parentMenu=[['parentDashboard','Dashboard','⌂'],['parentProfile','Profil Anak','♟'],['parentAttendance','Kehadiran','◔'],['parentJournal','Nilai & Evaluasi','✓'],['parentPrograms','Program Latihan','▣'],['parentCompetitions','Daftar Perlombaan','★'],['parentSchedules','Jadwal','◷'],['parentInvoices','Tagihan','▦'],['parentPayment','Pembayaran','Rp'],['parentAnnouncements','Pengumuman','◖'],['parentSettings','Pengaturan','⚙']]
+const parentMenu=[['parentDashboard','Dashboard','⌂'],['parentNotifications','Notifikasi','🔔'],['parentProfile','Profil Anak','♟'],['parentAttendance','Kehadiran','◔'],['parentJournal','Nilai & Evaluasi','✓'],['parentPrograms','Program Latihan','▣'],['parentCompetitions','Daftar Perlombaan','★'],['parentSchedules','Jadwal','◷'],['parentInvoices','Tagihan','▦'],['parentPayment','Pembayaran','Rp'],['parentAnnouncements','Pengumuman','◖'],['parentSettings','Pengaturan','⚙']]
 function dashboardCredit(){return `<footer class="dashboard-credit">Dashboard didesain oleh <strong>FAHMI DJAWAS</strong>. © 2026 Semua hak dilindungi</footer>`}
 function shell(content){
  const menus=role==='admin'?adminMenu:role==='coach'?coachMenu:parentMenu
- const unread=role==='admin'?unreadNotifications():0
+ const unread=unreadForCurrentRole()
+ const notificationPageId=notificationPageIdForRole()
  const primaryIds=role==='admin'?['dashboard','athletes','attendance','trainingPrograms']:
    role==='coach'?['coachDashboard','coachAthletes','trainingPrograms','coachAttendance']:
    ['parentDashboard','parentProfile','parentPrograms','parentPayment']
@@ -1478,9 +1612,9 @@ function shell(content){
  const pageTitle=menus.find(x=>x[0]===currentPage)?.[1]||''
  const isPrimary=primaryIds.includes(currentPage)
  return `<div class="app-shell app-enter role-${role}">
-  <aside class="sidebar" aria-label="Menu lengkap"><div class="logo-box">${clubLogo("sidebar-logo")}<span>${esc(state.settings.clubName||"AQILAH Swimming Club")}</span></div><nav>${menus.map(([id,l,i])=>`<button class="nav-item ${currentPage===id?'active':''} ${/settings/i.test(id)?'nav-settings':''}" data-page="${id}"><i>${i}</i><span>${l}</span>${id==='notifications'&&unread?`<em class="menu-badge">${unread}</em>`:''}</button>`).join('')}</nav><button id="logoutBtn" class="nav-item logout"><i>↪</i><span>Keluar</span></button></aside>
+  <aside class="sidebar" aria-label="Menu lengkap"><div class="logo-box">${clubLogo("sidebar-logo")}<span>${esc(state.settings.clubName||"AQILAH Swimming Club")}</span></div><nav>${menus.map(([id,l,i])=>`<button class="nav-item ${currentPage===id?'active':''} ${/settings/i.test(id)?'nav-settings':''}" data-page="${id}"><i>${i}</i><span>${l}</span>${id===notificationPageId&&unread?`<em class="menu-badge">${unread}</em>`:''}</button>`).join('')}</nav><button id="logoutBtn" class="nav-item logout"><i>↪</i><span>Keluar</span></button></aside>
   <button type="button" class="sidebar-backdrop" aria-label="Tutup menu navigasi"></button>
-  <section class="main-area"><header class="topbar"><button id="menuBtn" class="menu-btn" aria-label="Buka menu lengkap">☰</button><div class="topbar-title"><h2>${esc(pageTitle)}</h2><small>${new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</small></div>${role==='admin'?`<button class="notification-bell" data-page="notifications" aria-label="Notifikasi">🔔${unread?`<b>${unread}</b>`:''}</button>`:''}<span id="syncBadge" class="sync-badge">${esc(syncStatus)}</span></header><main class="content blue-dashboard-content">${content}${dashboardCredit()}</main></section>
+  <section class="main-area"><header class="topbar"><button id="menuBtn" class="menu-btn" aria-label="Buka menu lengkap">☰</button><div class="topbar-title"><h2>${esc(pageTitle)}</h2><small>${new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</small></div><button class="notification-bell" data-page="${notificationPageId}" aria-label="Notifikasi">🔔${unread?`<b>${unread}</b>`:''}</button><span id="syncBadge" class="sync-badge">${esc(syncStatus)}</span></header><main class="content blue-dashboard-content">${content}${dashboardCredit()}</main></section>
   <nav class="bottom-nav" aria-label="Navigasi utama">${primaryMenus.map(([id,l,i])=>`<button class="bottom-nav-item ${currentPage===id?'active':''}" data-page="${id}"><i>${i}</i><span>${l.replace('Program Latihan','Program').replace('Pembayaran','Bayar').replace('Data Atlet','Atlet').replace('Atlet Binaan','Atlet').replace('Profil Anak','Profil').replace('Absensi','Hadir')}</span></button>`).join('')}<button id="moreNavBtn" class="bottom-nav-item ${isPrimary?'':'active'}"><i>☰</i><span>Lainnya</span></button></nav>
  </div>`
 }
@@ -1788,6 +1922,11 @@ function parentTimes(){const a=parentAthlete();const rows=state.timeRecords.filt
 
 function notificationsPage(){const list=(state.notifications||[]).filter(n=>(n.notificationAudience||n.recipientRole||'admin')==='admin');return `<section class="card"><div class="card-head"><div><h3>Pusat Notifikasi Admin</h3><small>${unreadNotifications()} notifikasi belum dibaca</small></div><div class="notification-actions"><button class="secondary small" id="markAllRead">Tandai Semua Dibaca</button><button class="danger small" id="deleteReadNotifications">Hapus yang Dibaca</button></div></div><div class="notification-list">${list.length?list.map(n=>`<button class="notification-item ${n.read?'':'unread'}" data-open-notification="${n.id}"><span class="notification-icon">${n.type==='payment'?'Rp':'✚'}</span><span><b>${esc(n.title)}</b><small>${esc(n.message)}</small><time>${new Date(n.createdAt).toLocaleString('id-ID')}</time></span>${n.read?'':'<i>Baru</i>'}</button>`).join(''):'<div class="empty">Belum ada notifikasi.</div>'}</div></section>`}
 
+function parentNotificationsPage(){
+ const a=parentAthlete(),rows=parentNotificationList(a?.id||parentAthleteId),unread=rows.filter(n=>!n.read).length
+ return `<section class="card"><div class="card-head"><div><h3>Pusat Notifikasi</h3><small>${unread} notifikasi belum dibaca${a?` · ${esc(a.name)}`:''}</small></div><div class="notification-actions"><button class="secondary small" id="markParentNotificationsRead">Tandai Semua Dibaca</button></div></div>
+ <div class="notification-list">${rows.length?rows.map(n=>`<button class="notification-item ${n.read?'':'unread'}" data-parent-notification="${esc(n.id)}"><span class="notification-icon">${notificationIcon(n.type)}</span><span><b>${esc(n.title||'AQILAH Swimming Club')}</b><small>${esc(n.message||'')}</small><time>${n.createdAt?new Date(n.createdAt).toLocaleString('id-ID'):'-'}</time></span>${n.read?'':'<i>Baru</i>'}</button>`).join(''):'<div class="empty">Belum ada notifikasi.</div>'}</div></section>`
+}
 function parentPaymentPage(){
  const a=parentAthlete(),mine=state.payments.filter(p=>p.athleteId===a?.id).slice().reverse()
  const openInvoices=state.invoices.filter(i=>i.athleteId===a.id&&i.status==='unpaid')
@@ -2110,7 +2249,7 @@ function settingsPage(){
  <section class="card system-health-card"><h3>Monitoring, Backup, dan Pemulihan</h3>${(()=>{const h=systemHealth();return `<div class="health-grid"><div><b>Database</b><span>${esc(h.database)}</span></div><div><b>Realtime</b><span>${esc(h.realtime)}</span></div><div><b>Backup Lokal</b><span>${esc(h.localBackup)}</span></div><div><b>Antrean</b><span>${esc(h.pending)}</span></div><div><b>Revisi</b><span>${h.revision}</span></div><div><b>Jurnal Terakhir</b><span>${esc(h.journal)}</span></div></div>`})()}<div class="action-stack recovery-actions"><button class="primary small" id="syncNow">Sinkronkan Sekarang</button><button class="secondary small" id="downloadFullBackup">Download Backup JSON</button><button class="secondary small" id="downloadAuditTrail">Download Audit Trail</button><button class="warning small" id="restoreSafetySnapshot">Pulihkan Snapshot Terakhir</button></div><small class="hint">Pemulihan menggabungkan snapshot dengan data saat ini dan tidak menimpa data unik yang masih ada.</small></section>
  </div>`
 }
-function pageContent(){if(role==='parent'){if(currentPage==='parentDashboard')return parentDashboard();if(currentPage==='parentPassword')return parentPasswordPage();if(currentPage==='parentProfile')return parentProfile();if(currentPage==='parentTargets')return parentTargetPage();if(currentPage==='parentJournal')return parentJournalPage();if(currentPage==='parentAttendance')return parentAttendancePage();if(currentPage==='parentDryland')return parentDrylandPage();if(currentPage==='parentPackage')return parentPackagePage();if(currentPage==='parentInvoices')return parentInvoicesPage();if(currentPage==='parentPrograms')return parentPrograms();if(currentPage==='parentCompetitions')return parentCompetitionsPage();if(currentPage==='parentSchedules')return parentSchedulesPage();if(currentPage==='parentAnnouncements')return parentAnnouncementsPage();if(currentPage==='parentSettings')return parentSettingsPage();if(currentPage==='parentPassword')return parentPasswordPage();if(currentPage==='parentTimes')return parentTimes();if(currentPage==='parentPayment')return parentPaymentPage();return parentDashboard()}if(role==='coach'){if(currentPage==='coachPassword')return coachPasswordPage();if(currentPage==='coachSettings')return coachSettingsPage();if(currentPage==='coachNotifications')return coachNotificationsPage();if(currentPage==='coachSalaryHistory')return coachSalaryHistoryPage();if(currentPage==='coachTimeRecords')return coachTimeRecords();if(currentPage==='coachDevelopment')return developmentPage();if(currentPage==='coachAthletes')return coachAthletesPage();if(currentPage==='coachAnnouncements')return parentAnnouncementsPage();if(currentPage==='trainingPrograms')return trainingProgramsPage();if(currentPage==='coachAttendance')return attendanceManagementPage();if(currentPage==='coachSchedules')return schedulesManagementPage();return coachDashboard()}if(currentPage==='notifications')return notificationsPage();if(currentPage==='athletes')return athleteTable();if(currentPage==='registrations')return registrationsPage();if(currentPage==='coaches')return coachesPage();if(currentPage==='coachSalaries')return coachSalariesPage();if(currentPage==='development')return developmentPage();if(currentPage==='timeRecords')return timeRecordsPage();if(currentPage==='trainingPrograms')return trainingProgramsPage();if(currentPage==='attendance')return attendanceManagementPage();if(currentPage==='schedules')return schedulesManagementPage();if(currentPage==='payments')return paymentsPage();if(currentPage==='invoices')return invoicesPage();if(currentPage==='competitions')return competitionsPage();if(currentPage==='competitionRegistrations')return competitionRegistrationsPage();if(currentPage==='competitionPayments')return competitionPaymentsPage();if(currentPage==='announcements')return announcementsPage();if(currentPage==='reports')return reportsPage();if(currentPage==='parents')return generic('Portal Orang Tua',state.athletes.slice(0,10));if(currentPage==='settings')return settingsPage();return dashboardPage()}
+function pageContent(){if(role==='parent'){if(currentPage==='parentDashboard')return parentDashboard();if(currentPage==='parentNotifications')return parentNotificationsPage();if(currentPage==='parentPassword')return parentPasswordPage();if(currentPage==='parentProfile')return parentProfile();if(currentPage==='parentTargets')return parentTargetPage();if(currentPage==='parentJournal')return parentJournalPage();if(currentPage==='parentAttendance')return parentAttendancePage();if(currentPage==='parentDryland')return parentDrylandPage();if(currentPage==='parentPackage')return parentPackagePage();if(currentPage==='parentInvoices')return parentInvoicesPage();if(currentPage==='parentPrograms')return parentPrograms();if(currentPage==='parentCompetitions')return parentCompetitionsPage();if(currentPage==='parentSchedules')return parentSchedulesPage();if(currentPage==='parentAnnouncements')return parentAnnouncementsPage();if(currentPage==='parentSettings')return parentSettingsPage();if(currentPage==='parentPassword')return parentPasswordPage();if(currentPage==='parentTimes')return parentTimes();if(currentPage==='parentPayment')return parentPaymentPage();return parentDashboard()}if(role==='coach'){if(currentPage==='coachPassword')return coachPasswordPage();if(currentPage==='coachSettings')return coachSettingsPage();if(currentPage==='coachNotifications')return coachNotificationsPage();if(currentPage==='coachSalaryHistory')return coachSalaryHistoryPage();if(currentPage==='coachTimeRecords')return coachTimeRecords();if(currentPage==='coachDevelopment')return developmentPage();if(currentPage==='coachAthletes')return coachAthletesPage();if(currentPage==='coachAnnouncements')return parentAnnouncementsPage();if(currentPage==='trainingPrograms')return trainingProgramsPage();if(currentPage==='coachAttendance')return attendanceManagementPage();if(currentPage==='coachSchedules')return schedulesManagementPage();return coachDashboard()}if(currentPage==='notifications')return notificationsPage();if(currentPage==='athletes')return athleteTable();if(currentPage==='registrations')return registrationsPage();if(currentPage==='coaches')return coachesPage();if(currentPage==='coachSalaries')return coachSalariesPage();if(currentPage==='development')return developmentPage();if(currentPage==='timeRecords')return timeRecordsPage();if(currentPage==='trainingPrograms')return trainingProgramsPage();if(currentPage==='attendance')return attendanceManagementPage();if(currentPage==='schedules')return schedulesManagementPage();if(currentPage==='payments')return paymentsPage();if(currentPage==='invoices')return invoicesPage();if(currentPage==='competitions')return competitionsPage();if(currentPage==='competitionRegistrations')return competitionRegistrationsPage();if(currentPage==='competitionPayments')return competitionPaymentsPage();if(currentPage==='announcements')return announcementsPage();if(currentPage==='reports')return reportsPage();if(currentPage==='parents')return generic('Portal Orang Tua',state.athletes.slice(0,10));if(currentPage==='settings')return settingsPage();return dashboardPage()}
 function bindEvents(){
  document.querySelectorAll('[data-register-competition]').forEach(b=>b.onclick=()=>{
    const event=state.competitions.find(x=>x.id===b.dataset.registerCompetition),a=parentAthlete(),dialog=document.querySelector('#competitionRegistrationDialog'),form=document.querySelector('#competitionRegistrationForm')
@@ -2356,6 +2495,19 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
    finally{setFormBusy(e.currentTarget,false)}
  })
  document.querySelectorAll('[data-delete-salary]').forEach(b=>b.onclick=async()=>{if(!confirm('Batalkan pembayaran gaji ini? Data tidak akan dihapus permanen.'))return;const salary=state.coachSalaries.find(s=>s.id===b.dataset.deleteSalary);if(!salary)return;salary.status='cancelled';salary.cancelledAt=new Date().toISOString();salary.updatedAt=salary.cancelledAt;try{await commitCriticalRecord('coachSalaries',salary.id);await deactivateFinanceReference('expense','coach_salary',salary.id);const notification=state.coachNotifications.find(n=>n.referenceType==='coach_salary'&&n.referenceId===salary.id);if(notification)await deleteDedicatedSafely('coachNotifications',notification.id)}catch(error){console.error('Pembatalan transaksi gaji belum lengkap:',error)}render()})
+ document.querySelectorAll('[data-parent-notification]').forEach(el=>el.onclick=async()=>{
+  const n=(state.notifications||[]).find(x=>String(x.id)===el.dataset.parentNotification)
+  if(!n)return
+  await markNotificationRead('notifications',n)
+  const page=n.deepLink||n.page||n.target||''
+  if(page&&page!=='parentNotifications')currentPage=page
+  render()
+ })
+ document.querySelector('#markParentNotificationsRead')?.addEventListener('click',async()=>{
+  const changed=parentNotificationList().filter(n=>!n.read)
+  await Promise.allSettled(changed.map(n=>markNotificationRead('notifications',n)))
+  render()
+ })
  document.querySelector('#markCoachNotificationsRead')?.addEventListener('click',()=>{const c=currentCoach();state.coachNotifications.forEach(n=>{if(n.coachId===c.id&&!n.read){n.read=true;n.readAt=new Date().toISOString();persistDedicatedSoon('coachNotifications',n.id)}});render()})
  document.querySelectorAll('[data-coach-notification]').forEach(el=>el.onclick=()=>{const n=state.coachNotifications.find(x=>x.id===el.dataset.coachNotification);if(n){n.read=true;n.readAt=new Date().toISOString();currentPage=n.page||'coachSalaryHistory';persistDedicatedSoon('coachNotifications',n.id);render()}})
 
@@ -2617,6 +2769,7 @@ async function start(){
       const remoteCleanup=cleanupExpiredCompetitionPayments()
       if(remoteCleanup.changed)queueSave()
       subscribeRealtime()
+      flushDeleteOfflineQueue()
       flushFinanceOfflineQueue()
       if(remoteChanged||remoteCleanup.changed)renderRemoteUpdateSafely()
       maybeShowDrylandReminder()
