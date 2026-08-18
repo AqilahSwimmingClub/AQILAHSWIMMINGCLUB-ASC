@@ -3,6 +3,17 @@ plugins {
     id 'com.google.gms.google-services'
 }
 
+// Kunci penandatanganan rilis dibaca dari android/keystore.properties.
+// File itu TIDAK ikut masuk git karena berisi kata sandi. Selama file dan
+// keystore-nya sama, setiap APK baru dianggap Android sebagai UPDATE dari
+// aplikasi yang sudah terpasang, bukan aplikasi berbeda yang wajib uninstall.
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+def hasReleaseKeystore = keystorePropertiesFile.exists()
+def keystoreProperties = new Properties()
+if (hasReleaseKeystore) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
 android {
     namespace 'com.aqilahswimmingclub.app'
     compileSdk 35
@@ -11,12 +22,31 @@ android {
         applicationId 'com.aqilahswimmingclub.app'
         minSdk 29
         targetSdk 35
-        versionCode 1
-        versionName '1.0.0'
+        // Dinaikkan lewat android/gradle.properties, bukan diketik ulang di sini.
+        // Android hanya mau memasang update bila versionCode lebih besar.
+        versionCode Integer.parseInt(project.findProperty('ascVersionCode') ?: '1')
+        versionName project.findProperty('ascVersionName') ?: '1.0.0'
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
     }
 
     buildTypes {
         release {
+            // Tanpa keystore, APK rilis keluar tanpa tanda tangan dan Android
+            // akan menolak memasangnya. Build sengaja dibiarkan gagal terang-terangan
+            // daripada menghasilkan APK yang memaksa uninstall.
+            if (hasReleaseKeystore) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
