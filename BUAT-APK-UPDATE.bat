@@ -48,22 +48,84 @@ echo identitas aplikasi Anda selamanya. Simpan cadangannya di tempat aman.
 echo Kalau file ini hilang, semua update berikutnya akan minta uninstall.
 echo.
 
-rem keytool jarang ada di PATH. Cari di lokasi umum JDK dan Android Studio.
+rem keytool hampir tidak pernah ada di PATH. Dicari bertahap: lokasi baku,
+rem lalu penelusuran menyeluruh, lalu terakhir ditanyakan ke pengguna.
+echo       Mencari keytool...
 set "KEYTOOL="
 where keytool >nul 2>nul && set "KEYTOOL=keytool"
 if not defined KEYTOOL if exist "%JAVA_HOME%\bin\keytool.exe" set "KEYTOOL=%JAVA_HOME%\bin\keytool.exe"
-if not defined KEYTOOL if exist "%ProgramFiles%\Android\Android Studio\jbr\bin\keytool.exe" set "KEYTOOL=%ProgramFiles%\Android\Android Studio\jbr\bin\keytool.exe"
-if not defined KEYTOOL if exist "%ProgramFiles%\Android\Android Studio\jre\bin\keytool.exe" set "KEYTOOL=%ProgramFiles%\Android\Android Studio\jre\bin\keytool.exe"
-if not defined KEYTOOL if exist "%LOCALAPPDATA%\Programs\Android Studio\jbr\bin\keytool.exe" set "KEYTOOL=%LOCALAPPDATA%\Programs\Android Studio\jbr\bin\keytool.exe"
-if not defined KEYTOOL if exist "%LOCALAPPDATA%\Programs\Android Studio\jre\bin\keytool.exe" set "KEYTOOL=%LOCALAPPDATA%\Programs\Android Studio\jre\bin\keytool.exe"
 
+rem Lokasi baku Android Studio pada berbagai cara pemasangan.
+rem %ProgramFiles(x86)% memuat tanda kurung yang mengacaukan parser batch
+rem di dalam blok, jadi nilainya disalin dulu dan dibaca lewat penundaan.
+set "PF86=%ProgramFiles(x86)%"
+for %%R in ("%ProgramFiles%" "!PF86!" "%LOCALAPPDATA%\Programs" "%LOCALAPPDATA%") do (
+  for %%S in ("Android\Android Studio" "Android Studio") do (
+    for %%V in (jbr jre) do (
+      if not defined KEYTOOL if exist "%%~R\%%~S\%%V\bin\keytool.exe" set "KEYTOOL=%%~R\%%~S\%%V\bin\keytool.exe"
+    )
+  )
+)
+
+rem JDK mandiri yang lazim dipakai di Windows.
+for %%R in ("%ProgramFiles%\Java" "%ProgramFiles%\Eclipse Adoptium" "%ProgramFiles%\Microsoft" "%ProgramFiles%\Amazon Corretto" "%ProgramFiles%\Zulu") do (
+  if exist "%%~R" for /d %%J in ("%%~R\*") do (
+    if not defined KEYTOOL if exist "%%~fJ\bin\keytool.exe" set "KEYTOOL=%%~fJ\bin\keytool.exe"
+  )
+)
+
+if defined KEYTOOL goto :keytoolsiap
+
+rem Jaring terakhir: telusuri menyeluruh. Hasilnya lewat berkas sementara supaya
+rem tidak perlu escaping pengalihan di dalam blok kurung.
+echo       Belum ketemu di lokasi baku, menelusuri lebih luas...
+set "KTLIST=%TEMP%\asc-cari-keytool.txt"
+if exist "!KTLIST!" del /q "!KTLIST!"
+where /r "%ProgramFiles%" keytool.exe > "!KTLIST!" 2>nul
+for /f "usebackq delims=" %%J in ("!KTLIST!") do if not defined KEYTOOL set "KEYTOOL=%%J"
+if defined KEYTOOL goto :keytoolbersih
+
+where /r "%LOCALAPPDATA%" keytool.exe > "!KTLIST!" 2>nul
+for /f "usebackq delims=" %%J in ("!KTLIST!") do if not defined KEYTOOL set "KEYTOOL=%%J"
+if defined KEYTOOL goto :keytoolbersih
+
+rem Terakhir: minta pengguna menunjukkan sendiri, jangan mati di sini.
+echo.
+echo keytool tidak ditemukan otomatis.
+echo.
+echo keytool ikut terpasang bersama Android Studio. Cara menemukannya:
+echo   1. Buka File Explorer
+echo   2. Masuk ke folder Android Studio, biasanya
+echo      C:\Program Files\Android\Android Studio
+echo   3. Buka folder jbr, lalu folder bin
+echo   4. Cari berkas keytool.exe
+echo   5. Klik kanan keytool.exe, pilih Copy as path
+echo   6. Tempel di bawah ini dengan Ctrl+V lalu tekan Enter
+echo.
+echo Kalau Android Studio memang belum terpasang, tutup jendela ini,
+echo pasang Android Studio lebih dulu, lalu jalankan berkas ini lagi.
+echo.
+set "KEYTOOL="
+set /p KEYTOOL=Lokasi keytool.exe: 
+
+:keytoolbersih
+if exist "%TEMP%\asc-cari-keytool.txt" del /q "%TEMP%\asc-cari-keytool.txt"
+rem Buang tanda kutip bila pengguna menempel hasil Copy as path.
+if defined KEYTOOL set KEYTOOL=!KEYTOOL:"=!
+
+:keytoolsiap
 if not defined KEYTOOL (
-  echo [GAGAL] keytool tidak ditemukan.
-  echo keytool ikut terpasang bersama Android Studio, biasanya di:
-  echo    C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe
-  echo Pastikan Android Studio terpasang, lalu jalankan file ini lagi.
+  echo [GAGAL] Lokasi keytool tidak diisi.
   goto :gagal
 )
+if /i "!KEYTOOL!"=="keytool" goto :keytoolok
+if not exist "!KEYTOOL!" (
+  echo [GAGAL] Berkas tidak ditemukan: !KEYTOOL!
+  echo Pastikan lokasinya benar dan berakhiran keytool.exe
+  goto :gagal
+)
+
+:keytoolok
 echo       keytool: !KEYTOOL!
 echo.
 
