@@ -156,7 +156,10 @@ const ROW_COLLECTIONS = {
   },
   pendingRegistrations: {
     table:'asc_registrations',
-    toRow:item=>({legacy_id:String(item.id||createId()),data:item,deleted_at:null,updated_at:new Date().toISOString()})
+    // deleted_at tidak pernah dipaksa null lagi supaya penyimpanan ulang tidak
+    // menghidupkan kembali pendaftar yang sudah dihapus di sumber datanya.
+    toRow:item=>({legacy_id:String(item.id||createId()),data:item,deleted_at:item.deletedAt||null,updated_at:new Date().toISOString()}),
+    trueEmptyFallback:true
   },
   notifications: {
     table:'asc_notifications',
@@ -269,7 +272,7 @@ async function loadRowCollections(){
       // mengganti data atlet yang masih ada dengan array kosong.
       return
     }
-    if(['invoices','competitions'].includes(key)){
+    if(['invoices','competitions','pendingRegistrations'].includes(key)){
       const tombstones=state.__tombstones?.[key]||{}
       const safeFallback=[...new Map(fallback.filter(item=>!tombstones[String(item?.id||'')]).map(item=>[String(item?.id||''),item])).values()].filter(item=>item?.id)
       if(!error&&items.length)state[key]=items
@@ -278,7 +281,11 @@ async function loadRowCollections(){
       return
     }
     if(!error&&items.length)state[key]=items
-    else if(fallback.length)state[key]=structuredClone(fallback)
+    else{
+      // Fallback legacy disaring nisan supaya tidak menghidupkan data terhapus.
+      const safeFallback=withoutTombstoned(key,fallback)
+      if(safeFallback.length)state[key]=structuredClone(safeFallback)
+    }
     // Bila tabel dan fallback kosong, cache perangkat tidak pernah diganti [].
   })
   normalize()
@@ -293,10 +300,16 @@ function isBundledDefaultAthleteList(items){
 function applyRemotePayloadPreservingDedicated(payload){
   const previous=state
   const next={...structuredClone(defaultState),...(payload&&typeof payload==='object'?payload:{})}
+  // Nisan penghapusan perangkat ini tidak boleh hilang saat payload lama masuk.
+  next.__tombstones=mergeTombstoneMaps(previous?.__tombstones,next.__tombstones)
   DEDICATED_COLLECTION_KEYS.forEach(key=>{
-    if((!Array.isArray(next[key])||next[key].length===0)&&Array.isArray(previous?.[key])&&previous[key].length){
-      next[key]=structuredClone(previous[key])
-    }
+    // saveRemote() sengaja tidak pernah memperbarui koleksi ini di class_app_data,
+    // jadi isinya adalah salinan beku sebelum migrasi. Data hidup selalu datang
+    // dari tabelnya sendiri lewat loadRowCollections(), sehingga payload legacy
+    // tidak boleh menimpa apa pun dan tidak boleh menghidupkan data terhapus.
+    const localList=Array.isArray(previous?.[key])?previous[key]:null
+    if(localList&&localList.length){next[key]=structuredClone(localList);return}
+    if(Array.isArray(next[key]))next[key]=withoutTombstoned(key,next[key],next.__tombstones)
   })
   if(stableSerialize(next)===stableSerialize(previous))return false
   state=next
@@ -546,6 +559,7 @@ function normalize() {
   state.auditTrail ||= []
   state.versionHistory ||= []
   state.__tombstones ||= {}
+  purgeTombstonedRecords()
   state.timeRecords ||= []; state.trainingPrograms ||= []; state.attendance ||= []; state.schedules ||= []; state.payments ||= []; state.competitions ||= []; state.competitionRegistrations ||= []; state.announcements ||= []
 }
 const MODULE_CACHE_KEYS={
@@ -560,6 +574,54 @@ const MODULE_CACHE_KEYS={
 }
 const INVOICE_TOMBSTONE_CACHE_KEY='asc_cache_invoice_tombstones'
 const COMPETITION_TOMBSTONE_CACHE_KEY='asc_cache_competition_tombstones'
+// Nisan penghapusan untuk SELURUH koleksi. Sebelumnya hanya tagihan dan event
+// yang disimpan, sehingga penghapusan menu lain hilang begitu halaman dimuat
+// ulang dan payload legacy class_app_data menghidupkannya kembali.
+const TOMBSTONE_CACHE_KEY='asc_cache_tombstones'
+function tombstonesFor(collection,source=state.__tombstones){
+  const graves=source?.[collection]
+  return graves&&typeof graves==='object'?graves:{}
+}
+function isTombstoned(collection,id,source=state.__tombstones){
+  return Boolean(tombstonesFor(collection,source)[String(id)])
+}
+function markTombstone(collection,id){
+  state.__tombstones ||= {}
+  state.__tombstones[collection] ||= {}
+  state.__tombstones[collection][String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+}
+function clearTombstone(collection,id){
+  const graves=state.__tombstones?.[collection]
+  if(graves)delete graves[String(id)]
+}
+function mergeTombstoneMaps(...sources){
+  const merged={}
+  sources.forEach(source=>{
+    if(!source||typeof source!=='object')return
+    Object.entries(source).forEach(([collection,graves])=>{
+      if(!graves||typeof graves!=='object')return
+      merged[collection]={...(merged[collection]||{}),...graves}
+    })
+  })
+  return merged
+}
+function withoutTombstoned(collection,list,source=state.__tombstones){
+  const graves=tombstonesFor(collection,source)
+  if(!Array.isArray(list)||!Object.keys(graves).length)return list
+  return list.filter((item,index)=>!graves[String(item?.id||'')]&&!graves[recordIdentity(item,index)])
+}
+// Satu titik penyaring: data yang sudah dihapus tidak pernah boleh bertahan di
+// state, dari sumber mana pun (cache lokal, payload legacy, atau realtime).
+function purgeTombstonedRecords(){
+  const tombstones=state.__tombstones
+  if(!tombstones||typeof tombstones!=='object')return
+  Object.keys(tombstones).forEach(collection=>{
+    const list=state[collection]
+    if(!Array.isArray(list)||!list.length)return
+    const kept=withoutTombstoned(collection,list)
+    if(kept.length!==list.length)state[collection]=kept
+  })
+}
 function cacheSafeClone(value){
   if(Array.isArray(value))return value.map(cacheSafeClone)
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>[key,cacheSafeClone(item)]))
@@ -610,6 +672,7 @@ function saveLocal(){
   // aqilah_sc_data hanya metadata kecil. Data operasional disimpan per modul.
   safeLocalStorageSet('aqilah_sc_data',JSON.stringify(localMetadata()))
   saveModuleCaches()
+  safeLocalStorageSet(TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones||{})))
   safeLocalStorageSet(INVOICE_TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones?.invoices||{})))
   safeLocalStorageSet(COMPETITION_TOMBSTONE_CACHE_KEY,JSON.stringify(cacheSafeClone(state.__tombstones?.competitions||{})))
 }
@@ -624,8 +687,11 @@ function loadLocal(){
   // Migrasi satu kali dari format lama yang masih berisi seluruh state.
   loadModuleCachesIntoState(stored?.storageVersion===2?null:stored)
   state.__tombstones ||= {}
-  try{state.__tombstones.invoices=JSON.parse(localStorage.getItem(INVOICE_TOMBSTONE_CACHE_KEY)||'{}')}catch(error){console.warn('Cache tombstone tagihan tidak dapat dibaca.',error)}
-  try{state.__tombstones.competitions=JSON.parse(localStorage.getItem(COMPETITION_TOMBSTONE_CACHE_KEY)||'{}')}catch(error){console.warn('Cache tombstone event tidak dapat dibaca.',error)}
+  try{state.__tombstones=mergeTombstoneMaps(state.__tombstones,JSON.parse(localStorage.getItem(TOMBSTONE_CACHE_KEY)||'{}'))}catch(error){console.warn('Cache tombstone tidak dapat dibaca.',error)}
+  // Dua kunci lama tetap dibaca agar penghapusan yang sudah tercatat sebelum
+  // pembaruan ini tidak hilang.
+  try{state.__tombstones.invoices=mergeTombstoneMaps({invoices:state.__tombstones.invoices},{invoices:JSON.parse(localStorage.getItem(INVOICE_TOMBSTONE_CACHE_KEY)||'{}')}).invoices||{}}catch(error){console.warn('Cache tombstone tagihan tidak dapat dibaca.',error)}
+  try{state.__tombstones.competitions=mergeTombstoneMaps({competitions:state.__tombstones.competitions},{competitions:JSON.parse(localStorage.getItem(COMPETITION_TOMBSTONE_CACHE_KEY)||'{}')}).competitions||{}}catch(error){console.warn('Cache tombstone event tidak dapat dibaca.',error)}
   normalize()
   compactLegacySafetySnapshots()
   saveLocal()
@@ -1015,7 +1081,7 @@ function subscribeRealtime() {
   // Polling hanya menjadi cadangan selama kanal realtime belum aktif/gagal.
   startFallbackPolling()
 }
-window.addEventListener('online',()=>{syncStatus='Internet tersambung, menyinkronkan...';updateSync();flushFinanceOfflineQueue();if(pendingRemoteSave)saveRemote();else loadRemote({renderAfter:true})})
+window.addEventListener('online',()=>{syncStatus='Internet tersambung, menyinkronkan...';updateSync();flushDeleteOfflineQueue();flushFinanceOfflineQueue();if(pendingRemoteSave)saveRemote();else loadRemote({renderAfter:true})})
 window.addEventListener('offline',()=>{syncStatus='Offline — perubahan tetap tersimpan di perangkat';updateSync()})
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&navigator.onLine){
@@ -1110,6 +1176,12 @@ async function verifyRemoteRecord(collection,id,timeoutMs=18000){
   return {verified:false,error:lastError}
 }
 async function commitCriticalRecord(collection,id){
+  // Penjaga terakhir: record yang sudah bernisan tidak boleh ditulis ulang ke
+  // sumber datanya, karena upsert akan mengembalikan deleted_at menjadi null.
+  if(isTombstoned(collection,id)){
+    console.warn(`${collection}:${id} sudah ditandai terhapus. Penyimpanan ulang dibatalkan.`)
+    return false
+  }
   if(DEDICATED_COLLECTION_KEYS.has(collection)){
     stampStateForSync();saveSafetySnapshot(state);saveLocal()
     if(!navigator.onLine)return false
@@ -1200,13 +1272,12 @@ async function deleteDedicatedSafely(collection,id){
   const index=list.findIndex(item=>String(item?.id)===String(id))
   if(index<0)return false
   const record=list[index]
-  state.__tombstones ||= {};state.__tombstones[collection] ||= {}
-  state.__tombstones[collection][String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  markTombstone(collection,id)
   list.splice(index,1)
   addAudit('Hapus',collection,id,record?.name||record?.title||record?.athleteName||'')
   addVersionSnapshot(`Hapus ${collection}`)
   stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
-  if(!navigator.onLine)return true
+  if(!navigator.onLine){queueOfflineDelete(collection,id);return true}
   await softDeleteDedicatedRecord(collection,id)
   return true
 }
@@ -1225,6 +1296,25 @@ function addAdminNotification(type,title,message,target){
 }
 function financeRecordId(direction,referenceType,referenceId){return `FIN-${direction}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-')}
 function normalizeFinanceCategory(value='LAINNYA'){const text=String(value).toUpperCase();if(text.includes('SPP'))return 'SPP';if(text.includes('LOMBA')||text.includes('COMPETITION'))return 'LOMBA';if(text.includes('PENDAFTAR'))return 'PENDAFTARAN';if(text.includes('GAJI')||text.includes('SALARY'))return 'GAJI';return text||'LAINNYA'}
+// Penghapusan saat offline dulu berhenti di perangkat saja: deleted_at tidak
+// pernah sampai ke Supabase, sehingga data muncul lagi di perangkat lain.
+const DELETE_OFFLINE_QUEUE_KEY='asc_delete_offline_queue'
+function deleteOfflineQueue(){try{const value=JSON.parse(localStorage.getItem(DELETE_OFFLINE_QUEUE_KEY)||'[]');return Array.isArray(value)?value:[]}catch{return []}}
+function queueOfflineDelete(collection,id){
+  safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify([...new Set([...deleteOfflineQueue(),`${collection}:${id}`])]))
+}
+async function flushDeleteOfflineQueue(){
+  if(!navigator.onLine)return
+  const pending=deleteOfflineQueue(),remaining=[]
+  for(const entry of pending){
+    const separator=String(entry).indexOf(':')
+    if(separator<0)continue
+    const collection=String(entry).slice(0,separator),id=String(entry).slice(separator+1)
+    if(!ROW_COLLECTIONS[collection])continue
+    try{await softDeleteDedicatedRecord(collection,id)}catch(error){remaining.push(entry);console.error(`Penghapusan ${entry} belum tersinkron:`,error)}
+  }
+  safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify(remaining))
+}
 const FINANCE_OFFLINE_QUEUE_KEY='asc_finance_offline_queue'
 function financeOfflineQueue(){try{return JSON.parse(localStorage.getItem(FINANCE_OFFLINE_QUEUE_KEY)||'[]')}catch{return []}}
 function queueFinanceOffline(id){safeLocalStorageSet(FINANCE_OFFLINE_QUEUE_KEY,JSON.stringify([...new Set([...financeOfflineQueue(),String(id)])]))}
@@ -1473,6 +1563,7 @@ function loginPage() {
         paymentAccountName:'FAHMI DJAWAS',
         paymentAccountNumber:'1560020198356'
       }
+      clearTombstone('pendingRegistrations',registration.id)
       state.pendingRegistrations.push(registration)
       addAdminNotification('registration','Pendaftar Atlet Baru',`${registration.name} mengirim formulir pendaftaran.`,'registrations')
       await commitCriticalRecord('pendingRegistrations',registration.id)
@@ -2678,6 +2769,7 @@ async function start(){
       const remoteCleanup=cleanupExpiredCompetitionPayments()
       if(remoteCleanup.changed)queueSave()
       subscribeRealtime()
+      flushDeleteOfflineQueue()
       flushFinanceOfflineQueue()
       if(remoteChanged||remoteCleanup.changed)renderRemoteUpdateSafely()
       maybeShowDrylandReminder()
