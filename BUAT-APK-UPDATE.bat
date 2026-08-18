@@ -11,7 +11,7 @@ echo.
 rem ================= 1. Cari Android SDK =================
 if exist "android\local.properties" goto :adasdk
 
-echo [1/6] Mencari lokasi Android SDK...
+echo [1/7] Mencari lokasi Android SDK...
 set "SDKDIR="
 if defined ANDROID_HOME if exist "%ANDROID_HOME%" set "SDKDIR=%ANDROID_HOME%"
 if not defined SDKDIR if defined ANDROID_SDK_ROOT if exist "%ANDROID_SDK_ROOT%" set "SDKDIR=%ANDROID_SDK_ROOT%"
@@ -34,14 +34,14 @@ echo.
 goto :lanjutkeystore
 
 :adasdk
-echo [1/6] android\local.properties sudah ada, dipakai.
+echo [1/7] android\local.properties sudah ada, dipakai.
 echo.
 
 rem ================= 2. Keystore tetap =================
 :lanjutkeystore
 if exist "android\keystore.properties" goto :adakeystore
 
-echo [2/6] Keystore rilis belum ada. Membuat SATU KALI saja...
+echo [2/7] Keystore rilis belum ada. Membuat SATU KALI saja...
 echo.
 echo PENTING: file android\asc-release.jks yang dibuat sekarang adalah
 echo identitas aplikasi Anda selamanya. Simpan cadangannya di tempat aman.
@@ -93,30 +93,39 @@ echo.
 goto :lanjutversi
 
 :adakeystore
-echo [2/6] Keystore rilis sudah ada, dipakai ulang. Bagus.
+echo [2/7] Keystore rilis sudah ada, dipakai ulang. Bagus.
 echo.
 
 rem ================= 3. Naikkan versi =================
 :lanjutversi
-echo [3/6] Menaikkan versionCode...
+echo [3/7] Menaikkan versionCode...
 call node scripts\bump-android-version.cjs
 if errorlevel 1 goto :gagal
 echo.
 
 rem ================= 4. Build web =================
-echo [4/6] Membuat build web terbaru...
+rem Pada salinan repositori yang baru, folder node_modules belum ada sehingga
+rem npm run build langsung gagal. Dependensi dipasang lebih dulu bila perlu.
+if exist "node_modules" goto :adamodul
+echo [4/7] Memasang dependensi proyek (sekali saja, agak lama)...
+call npm install --no-audit --no-fund
+if errorlevel 1 goto :gagal
+echo.
+:adamodul
+
+echo [5/7] Membuat build web terbaru...
 call npm run build
 if errorlevel 1 goto :gagal
 echo.
 
 rem ================= 5. Sinkron ke Android =================
-echo [5/6] Menyinkronkan ke proyek Android...
+echo [6/7] Menyinkronkan ke proyek Android...
 call npx cap sync android
 if errorlevel 1 goto :gagal
 echo.
 
 rem ================= 6. Rakit APK =================
-echo [6/6] Merakit APK rilis bertanda tangan...
+echo [7/7] Merakit APK rilis bertanda tangan...
 pushd android
 call gradlew.bat assembleRelease
 set "HASIL=%errorlevel%"
