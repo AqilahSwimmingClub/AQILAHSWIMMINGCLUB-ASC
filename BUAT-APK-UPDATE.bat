@@ -8,6 +8,10 @@ echo  MEMBUAT APK UPDATE (BUKAN INSTAL ULANG)
 echo ================================================
 echo.
 
+rem %ProgramFiles(x86)% memuat tanda kurung yang mengacaukan parser batch
+rem di dalam blok, jadi nilainya disalin lebih dulu di sini.
+set "PF86=%ProgramFiles(x86)%"
+
 rem ================= 1. Cari Android SDK =================
 if exist "android\local.properties" goto :adasdk
 
@@ -56,9 +60,6 @@ where keytool >nul 2>nul && set "KEYTOOL=keytool"
 if not defined KEYTOOL if exist "%JAVA_HOME%\bin\keytool.exe" set "KEYTOOL=%JAVA_HOME%\bin\keytool.exe"
 
 rem Lokasi baku Android Studio pada berbagai cara pemasangan.
-rem %ProgramFiles(x86)% memuat tanda kurung yang mengacaukan parser batch
-rem di dalam blok, jadi nilainya disalin dulu dan dibaca lewat penundaan.
-set "PF86=%ProgramFiles(x86)%"
 for %%R in ("%ProgramFiles%" "!PF86!" "%LOCALAPPDATA%\Programs" "%LOCALAPPDATA%") do (
   for %%S in ("Android\Android Studio" "Android Studio") do (
     for %%V in (jbr jre) do (
@@ -187,12 +188,43 @@ if errorlevel 1 goto :gagal
 echo.
 
 rem ================= 6. Rakit APK =================
-echo [7/7] Merakit APK rilis bertanda tangan...
+rem Gradle 8.9 hanya mendukung Java 17 sampai 22. Bila java di PATH lebih baru
+rem (Java 25 memberi pesan "Unsupported class file major version 69"), Gradle
+rem gagal sebelum membaca satu pun berkas build. JDK yang cocok dipilih di sini
+rem lalu diteruskan ke gradlew lewat JAVA_HOME.
+echo [7/7] Menyiapkan Java untuk Gradle...
+set "GRADLEJDK="
+for %%V in (jdk-17 jdk17 jdk-21 jdk21) do (
+  for %%R in ("%ProgramFiles%\Java" "!PF86!\Java" "%LOCALAPPDATA%\Programs\Java" "%ProgramFiles%\Eclipse Adoptium" "%ProgramFiles%\Microsoft" "%ProgramFiles%\Amazon Corretto" "%ProgramFiles%\Zulu") do (
+    if exist "%%~R" for /d %%J in ("%%~R\%%V*") do (
+      if not defined GRADLEJDK if exist "%%~fJ\bin\java.exe" set "GRADLEJDK=%%~fJ"
+    )
+  )
+)
+rem JBR bawaan Android Studio juga cocok dan hampir selalu tersedia.
+for %%R in ("%ProgramFiles%" "!PF86!" "%LOCALAPPDATA%\Programs" "%LOCALAPPDATA%") do (
+  for %%S in ("Android\Android Studio" "Android Studio") do (
+    if not defined GRADLEJDK if exist "%%~R\%%~S\jbr\bin\java.exe" set "GRADLEJDK=%%~R\%%~S\jbr"
+  )
+)
+
+if defined GRADLEJDK (
+  set "JAVA_HOME=!GRADLEJDK!"
+  echo       Java untuk Gradle: !GRADLEJDK!
+) else (
+  echo       [PERINGATAN] JDK 17 atau 21 tidak ditemukan.
+  echo       Gradle akan memakai java bawaan PATH dan mungkin gagal.
+  echo       Bila gagal dengan pesan Unsupported class file major version,
+  echo       pasang JDK 17 lalu jalankan berkas ini lagi.
+)
+echo.
+
+echo       Merakit APK rilis bertanda tangan...
 pushd android
 call gradlew.bat assembleRelease
-set "HASIL=%errorlevel%"
+set "HASIL=!errorlevel!"
 popd
-if not "%HASIL%"=="0" goto :gagal
+if not "!HASIL!"=="0" goto :gagal
 
 echo.
 echo ================================================
