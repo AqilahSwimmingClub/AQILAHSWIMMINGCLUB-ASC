@@ -6,6 +6,9 @@ dist/
 _BACKUP-DATA-*/
 .codex-tmp-isogit/
 android/local.properties
+android/keystore.properties
+*.jks
+*.keystore
 android/.gradle/
 android/.idea/
 android/**/build/
