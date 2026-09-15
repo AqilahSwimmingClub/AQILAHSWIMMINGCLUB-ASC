@@ -5,16 +5,96 @@
 // otomatis lewat `npm test`. main.js memakai fungsi yang sama persis, sehingga
 // perilaku aplikasi dan perilaku yang diuji tidak pernah berbeda.
 
-// Kunci identitas sebuah record. Dipakai baik untuk menggabungkan data maupun
-// untuk mencocokkan nisan penghapusan.
+// Serialisasi stabil: urutan kunci object tidak memengaruhi hasilnya, sehingga
+// dua perangkat menghasilkan sidik jari yang sama untuk isi yang sama.
+export function stableSerialize(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`
+  return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableSerialize(value[k])}`).join(',')}}`
+}
+
+// FNV-1a 32-bit. Cukup untuk membedakan record dan, yang terpenting, memberi
+// hasil yang sama persis di semua perangkat tanpa dependensi tambahan.
+function sidikJari(teks) {
+  let h = 0x811c9dc5
+  for (let i = 0; i < teks.length; i++) {
+    h ^= teks.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h.toString(36).padStart(7, '0')
+}
+
+// Kunci identitas alami sebuah record, atau '' bila record itu benar-benar tidak
+// punya penanda yang dikenali. Dipisahkan supaya pemanggil dapat membedakan
+// "punya ID" dari "tidak punya ID" tanpa menebak.
+export function naturalIdentity(item) {
+  if (!item || typeof item !== 'object') return ''
+  return String(item.id || item.paymentId || item.registrationId || item.invoiceId ||
+    item.athleteId && item.date && `${item.athleteId}|${item.date}|${item.type || item.stroke || ''}` ||
+    item.athleteId && item.month && `${item.athleteId}|${item.month}|${item.paymentType || ''}` ||
+    item.coachId && item.period && `${item.coachId}|${item.period}` || '')
+}
+
+// Kunci identitas sebuah record. Dipakai untuk menggabungkan data maupun untuk
+// mencocokkan nisan penghapusan.
+//
+// Aturan penting: fungsi ini TIDAK PERNAH mengembalikan string kosong. Dulu
+// setiap record tanpa ID memakai kunci '' yang sama, sehingga beberapa record
+// berbeda saling menimpa di mergeCollection() dan datanya hilang diam-diam.
+// Sekarang record tanpa ID memperoleh sidik jari dari ISINYA, sehingga:
+//   - dua record berbeda tetap menjadi dua record;
+//   - record yang sama dikenali sebagai record yang sama walau urutan
+//     arraynya berubah antarproses sinkronisasi.
 export function recordIdentity(item, index = 0) {
   if (item && typeof item === 'object') {
-    return String(item.id || item.paymentId || item.registrationId || item.invoiceId ||
-      item.athleteId && item.date && `${item.athleteId}|${item.date}|${item.type || item.stroke || ''}` ||
-      item.athleteId && item.month && `${item.athleteId}|${item.month}|${item.paymentType || ''}` ||
-      item.coachId && item.period && `${item.coachId}|${item.period}` || '')
+    const alami = naturalIdentity(item)
+    if (alami) return alami
+    return `anon:${sidikJari(stableSerialize(item))}`
   }
-  return `index-${index}-${JSON.stringify(item)}`
+  // Nilai primitif (bukan object) tetap dibedakan berdasarkan isinya.
+  return `anon:${sidikJari(`${typeof item}:${JSON.stringify(item) ?? String(item)}`)}`
+}
+
+// Identitas yang menyertakan nomor kemunculan, untuk record tanpa ID yang isinya
+// benar-benar sama persis. Tanpa ini, dua baris kembar akan menyusut jadi satu.
+// Record yang punya ID tidak pernah diberi akhiran, sehingga penggabungan
+// berdasarkan ID tetap bekerja seperti biasa.
+export function identityWithOccurrence(item, index, penghitung) {
+  const dasar = recordIdentity(item, index)
+  if (naturalIdentity(item)) return dasar
+  const ke = (penghitung.get(dasar) || 0) + 1
+  penghitung.set(dasar, ke)
+  return ke === 1 ? dasar : `${dasar}#${ke}`
+}
+
+// Migrasi record operasional lama yang belum punya ID menjadi ID stabil.
+// ID-nya diturunkan dari isi record, jadi perangkat mana pun yang memigrasikan
+// record yang sama menghasilkan ID yang sama — tidak ada duplikat saat sinkron.
+// ID lama yang sudah valid TIDAK PERNAH diubah.
+export function ensureRecordIds(list, { prefix = 'REC' } = {}) {
+  if (!Array.isArray(list)) return []
+  const terpakai = new Set()
+  list.forEach(item => {
+    const id = item && typeof item === 'object' ? String(item.id || '') : ''
+    if (id) terpakai.add(id)
+  })
+  return list.map((item, index) => {
+    if (!item || typeof item !== 'object') return item
+    if (String(item.id || '')) return item
+    // Bila record sudah punya identitas alami (mis. athleteId|tanggal|jenis),
+    // identitas itulah yang dipakai sebagai ID. Dengan begitu migrasi tidak
+    // mengubah cara record dicocokkan: perangkat yang sudah bermigrasi dan yang
+    // belum tetap menghasilkan kunci yang sama, jadi tidak muncul duplikat.
+    const alami = naturalIdentity(item)
+    const dasar = alami || `${prefix}-${sidikJari(stableSerialize(item))}`
+    let id = dasar
+    let ke = 1
+    // Record kembar persis tetap mendapat ID berbeda, tanpa memakai posisi array
+    // sebagai satu-satunya pembeda.
+    while (terpakai.has(id)) id = `${dasar}-${++ke}`
+    terpakai.add(id)
+    return { ...item, id }
+  })
 }
 
 export function tombstonesFor(collection, source) {
@@ -77,7 +157,13 @@ export function mergeTombstoneMaps(...sources) {
 export function withoutTombstoned(collection, list, tombstones) {
   const graves = tombstonesFor(collection, tombstones)
   if (!Array.isArray(list) || !Object.keys(graves).length) return list
-  return list.filter((item, index) => !graves[String(item?.id || '')] && !graves[recordIdentity(item, index)])
+  return list.filter((item, index) => {
+    const id = String(item?.id || '')
+    // Kunci kosong tidak pernah dicari: sebuah nisan '' akan menghapus SELURUH
+    // record yang belum punya ID.
+    if (id && graves[id]) return false
+    return !graves[recordIdentity(item, index)]
+  })
 }
 
 // ID yang sudah bernisan tetapi masih hidup di sumber data. Penghapusannya belum
@@ -124,13 +210,17 @@ export function purgeTombstoned(target, tombstones = target?.__tombstones) {
 
 export function mergeCollection(remoteList = [], localList = [], tombstones = {}) {
   const merged = new Map()
+  // Penghitung kemunculan dihitung terpisah untuk tiap sisi, sehingga baris
+  // kembar ke-2 di server dipasangkan dengan baris kembar ke-2 di perangkat.
+  const hitungRemote = new Map()
+  const hitungLocal = new Map()
   ;(Array.isArray(remoteList) ? remoteList : []).forEach((item, index) => {
-    const key = recordIdentity(item, index)
-    if (!tombstones[key]) merged.set(key, structuredClone(item))
+    const key = identityWithOccurrence(item, index, hitungRemote)
+    if (!tombstones[key] && !tombstones[recordIdentity(item, index)]) merged.set(key, structuredClone(item))
   })
   ;(Array.isArray(localList) ? localList : []).forEach((item, index) => {
-    const key = recordIdentity(item, index)
-    if (tombstones[key]) return
+    const key = identityWithOccurrence(item, index, hitungLocal)
+    if (tombstones[key] || tombstones[recordIdentity(item, index)]) return
     const old = merged.get(key)
     merged.set(key, old && typeof old === 'object' && typeof item === 'object'
       ? { ...old, ...structuredClone(item) }
@@ -239,4 +329,65 @@ export async function commitTombstone(collection, id, {
   }
   markTombstoneSynced(tombstones, collection, id, deletedAt)
   return true
+}
+
+// ---------------------------------------------------------------------------
+// Pengalokasian ID yang aman terhadap nisan penghapusan.
+//
+// ID yang pernah dihapus TIDAK BOLEH dipakai ulang. Bila dipakai ulang, record
+// baru akan ditolak refuseTombstonedWrite(), atau ikut tersapu saat perangkat
+// lain menyinkronkan nisannya — record baru hilang tanpa jejak.
+// ---------------------------------------------------------------------------
+
+// Nomor urut berikutnya yang belum pernah dipakai DAN belum pernah bernisan.
+// Dipakai untuk ID berpola seperti ASC-0001 dan PLT-0001.
+export function nextSequentialId(collection, {
+  prefix,
+  pad = 4,
+  existingIds = [],
+  tombstones = {},
+  monotonic = true
+} = {}) {
+  const graves = tombstonesFor(collection, tombstones)
+  const angkaDari = nilai => {
+    const teks = String(nilai || '')
+    if (!teks.startsWith(`${prefix}-`)) return NaN
+    const angka = Number(teks.slice(prefix.length + 1).replace(/\D/g, ''))
+    return Number.isFinite(angka) ? angka : NaN
+  }
+  const terpakai = new Set()
+  existingIds.forEach(id => { const n = angkaDari(id); if (Number.isFinite(n)) terpakai.add(n) })
+  // Nomor yang pernah dihapus ikut dianggap terpakai selamanya.
+  Object.keys(graves).forEach(id => { const n = angkaDari(id); if (Number.isFinite(n)) terpakai.add(n) })
+
+  const buat = n => `${prefix}-${String(n).padStart(pad, '0')}`
+  if (monotonic) {
+    // Selalu naik: tidak pernah mundur ke nomor yang sempat kosong.
+    const tertinggi = terpakai.size ? Math.max(...terpakai) : 0
+    return buat(tertinggi + 1)
+  }
+  let n = 1
+  while (terpakai.has(n)) n++
+  return buat(n)
+}
+
+// ID deterministik (mis. FIN-income-payment-PAY1 atau NTF-...) dipakai ulang
+// dengan sengaja ketika sebuah referensi dibuat kembali. Bila ID dasarnya sudah
+// bernisan, record BARU harus memakai ID baru yang berbeda — bukan menghidupkan
+// kembali record lama dengan membatalkan nisannya secara lokal.
+export function nextAvailableDeterministicId(collection, baseId, tombstones = {}, batas = 500) {
+  const graves = tombstonesFor(collection, tombstones)
+  const dasar = String(baseId)
+  if (!graves[dasar]) return dasar
+  for (let revisi = 2; revisi <= batas; revisi++) {
+    const kandidat = `${dasar}-r${revisi}`
+    if (!graves[kandidat]) return kandidat
+  }
+  // Jalan terakhir yang tetap unik dan tidak pernah bertabrakan dengan nisan.
+  return `${dasar}-r${Date.now()}`
+}
+
+// Apakah sebuah ID aman dipakai untuk record baru?
+export function isIdSafeForNewRecord(collection, id, tombstones = {}) {
+  return !tombstonesFor(collection, tombstones)[String(id)]
 }

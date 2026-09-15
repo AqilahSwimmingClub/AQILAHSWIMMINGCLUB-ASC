@@ -7,7 +7,8 @@ import autoTable from 'jspdf-autotable'
 import {
   recordIdentity, isTombstoned as isTombstonedIn, markTombstone as markTombstoneIn,
   clearTombstone as clearTombstoneIn, mergeTombstoneMaps, withoutTombstoned, purgeTombstoned,
-  resurrectedIds, pendingTombstoneIds, commitTombstone,
+  resurrectedIds, pendingTombstoneIds, commitTombstone, ensureRecordIds,
+  nextSequentialId, nextAvailableDeterministicId, isIdSafeForNewRecord,
   mergeStateWithoutLoss as mergeStateWithoutLossPure, resolveCollectionFromSources
 } from './lib/sync-merge.js'
 
@@ -597,12 +598,17 @@ function calcGroup(birth) {
   if(y<=2010)return 'KU 1'; if(y<=2012)return 'KU 2'; if(y<=2014)return 'KU 3'; if(y<=2016)return 'KU 4'; if(y<=2018)return 'KU 5B'; return 'KU 5A'
 }
 function nextAthleteId() {
-  // Gunakan kembali nomor terkecil yang sedang kosong. Contoh: bila ASC-0012
-  // sudah dihapus, pendaftar berikutnya akan memperoleh ASC-0012.
-  const used=new Set((state.athletes||[]).map(a=>Number(String(a.id||'').replace(/\D/g,''))).filter(Number.isFinite))
-  let number=1
-  while(used.has(number)) number++
-  return `ASC-${String(number).padStart(4,'0')}`
+  // ID atlet TIDAK PERNAH dipakai ulang. Dulu nomor terkecil yang kosong dipakai
+  // kembali, sehingga atlet baru bisa memperoleh ID yang masih bernisan
+  // (mis. ASC-0012 yang baru dihapus). Record baru seperti itu ditolak
+  // refuseTombstonedWrite() atau ikut tersapu ketika perangkat lain
+  // menyinkronkan nisannya. Sekarang nomornya selalu naik dan seluruh nomor
+  // yang pernah bernisan ikut dilewati.
+  return nextSequentialId('athletes',{
+    prefix:'ASC',
+    existingIds:(state.athletes||[]).map(a=>a?.id),
+    tombstones:state.__tombstones
+  })
 }
 function normalize() {
   state.athletes=(state.athletes||[]).map((a,i)=>({
@@ -640,8 +646,29 @@ function normalize() {
   state.auditTrail ||= []
   state.versionHistory ||= []
   state.__tombstones ||= {}
-  purgeTombstonedRecords()
   state.timeRecords ||= []; state.trainingPrograms ||= []; state.attendance ||= []; state.schedules ||= []; state.payments ||= []; state.competitions ||= []; state.competitionRegistrations ||= []; state.announcements ||= []
+  migrateMissingRecordIds()
+  purgeTombstonedRecords()
+}
+// Record operasional lama dari payload legacy kadang belum punya `id`. Tanpa ID,
+// semuanya memakai kunci gabung yang sama dan saling menimpa. Di sini setiap
+// record seperti itu memperoleh ID stabil yang diturunkan dari isinya, sehingga
+// perangkat mana pun menghasilkan ID yang sama dan tidak ada duplikat.
+// ID lama yang sudah valid tidak pernah diubah.
+const ID_PREFIX_KOLEKSI={
+  attendance:'ATT',timeRecords:'TIM',trainingPrograms:'PRG',payments:'PAY',schedules:'SCH',
+  announcements:'ANN',athletes:'ASC',coaches:'PLT',pendingRegistrations:'REG',invoices:'INV',
+  competitions:'CMP',competitionRegistrations:'CRG',coachSalaries:'SAL',notifications:'NTF',
+  coachNotifications:'NTC',financeTransactions:'FIN',weeklyTargets:'WTG',skillJournals:'SKJ',
+  drylandTasks:'DRY',rescheduleRequests:'RSC',athletePackages:'PKG',auditTrail:'AUD',versionHistory:'VER'
+}
+function migrateMissingRecordIds(){
+  PERSISTENT_COLLECTIONS.forEach(key=>{
+    const list=state[key]
+    if(!Array.isArray(list)||!list.length)return
+    if(list.every(item=>!item||typeof item!=='object'||String(item.id||'')))return
+    state[key]=ensureRecordIds(list,{prefix:ID_PREFIX_KOLEKSI[key]||'REC'})
+  })
 }
 const MODULE_CACHE_KEYS={
   athletes:'asc_cache_athletes',attendance:'asc_cache_attendance',timeRecords:'asc_cache_time_records',
@@ -665,8 +692,39 @@ function isTombstoned(collection,id,source=state.__tombstones){
 function markTombstone(collection,id){
   state.__tombstones=markTombstoneIn(state.__tombstones||{},collection,id,{clientId:CLIENT_ID,actor:currentActor()})
 }
+// Membatalkan nisan HANYA di perangkat ini berbahaya: baris di Supabase masih
+// ber-deleted_at, sehingga record akan hilang lagi pada sinkronisasi berikutnya.
+// Karena itu fungsi ini tidak dipakai langsung oleh alur pembuatan record.
+// Pemulihan yang sah harus lewat restoreDeletedRecord() di bawah.
 function clearTombstone(collection,id){
   clearTombstoneIn(state.__tombstones,collection,id)
+}
+// Pemulihan record yang sudah dihapus, secara eksplisit dan tersinkron ke server.
+// Urutannya sengaja: server dipulihkan LEBIH DULU, nisan lokal baru dibatalkan
+// setelah Supabase benar-benar menerimanya. Bila server menolak, nisan tetap ada
+// sehingga perangkat ini tidak pernah menampilkan data yang sebenarnya terhapus.
+async function restoreDeletedRecord(collection,id){
+  const cfg=ROW_COLLECTIONS[collection]
+  if(!cfg)throw new Error(`Konfigurasi tabel ${collection} tidak ditemukan.`)
+  if(!isTombstoned(collection,id))return false
+  if(!navigator.onLine)throw new Error('Pemulihan data memerlukan koneksi internet.')
+  const now=new Date().toISOString()
+  markLocalRowWrite(cfg.table,id)
+  const {data,error}=await supabase.from(cfg.table)
+    .update({deleted_at:null,updated_at:now}).eq('legacy_id',String(id)).select('legacy_id')
+  if(error){
+    console.error(`Supabase ${cfg.table} gagal memulihkan record:`,error)
+    throw new Error(`${cfg.table}: ${error.message||error}`)
+  }
+  if(!Array.isArray(data)||!data.length){
+    throw new Error(`Record ${collection}:${id} tidak ada di Supabase sehingga tidak dapat dipulihkan.`)
+  }
+  clearTombstone(collection,id)
+  // Antrean hapus offline dibersihkan agar tidak menghapusnya lagi nanti.
+  safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify(deleteOfflineQueue().filter(e=>e!==`${collection}:${id}`)))
+  addAudit('Pulihkan',collection,id,'Pemulihan eksplisit tersinkron ke Supabase')
+  queueSave()
+  return true
 }
 // Satu titik penyaring: data yang sudah dihapus tidak pernah boleh bertahan di
 // state, dari sumber mana pun (cache lokal, payload legacy, atau realtime).
@@ -1396,8 +1454,12 @@ async function flushFinanceOfflineQueue(){
 }
 async function upsertFinanceReference({direction='income',referenceType,referenceId,amount=0,description='',category='',transactionType='',athleteId='',athleteName='',coachId='',coachName='',paymentId='',competitionId='',proofUrl='',transactionDate=new Date().toISOString()}){
   if(!referenceType||!referenceId)throw new Error('Referensi transaksi keuangan wajib tersedia.')
-  const id=financeRecordId(direction,referenceType,referenceId)
-  clearTombstone('financeTransactions',id)
+  // ID transaksi keuangan bersifat deterministik dari referensinya, jadi membuat
+  // ulang referensi yang sama menghasilkan ID yang sama. Dulu nisannya dibatalkan
+  // SECARA LOKAL, padahal baris di Supabase masih ber-deleted_at: record itu akan
+  // hilang lagi begitu perangkat mana pun menyinkronkan nisannya. Sekarang
+  // transaksi baru memperoleh ID baru yang berbeda dan record lama tetap terhapus.
+  const id=nextAvailableDeterministicId('financeTransactions',financeRecordId(direction,referenceType,referenceId),state.__tombstones)
   const item={id,direction,referenceType,referenceId,amount:Number(amount||0),description,category:normalizeFinanceCategory(category),transactionType,athleteId,athleteName,coachId,coachName,paymentId,competitionId,proofUrl,transactionDate,createdBy:currentActor(),createdRole:role||'system',createdDevice:PUSH_DEVICE_ID,updatedAt:new Date().toISOString()}
   const index=state.financeTransactions.findIndex(x=>x.id===id||(x.referenceType===referenceType&&String(x.referenceId)===String(referenceId)&&x.direction===direction))
   if(index>=0)state.financeTransactions[index]={...state.financeTransactions[index],...item,id:state.financeTransactions[index].id||id}
@@ -1412,8 +1474,10 @@ async function deactivateFinanceReference(direction,referenceType,referenceId){
   if(item)await deleteDedicatedSafely('financeTransactions',item.id)
 }
 async function upsertTargetedNotification({recipientRole,recipientId,athleteId='',coachId='',title,message,type,referenceType,referenceId,page}){
-  const id=`NTF-${recipientRole}-${recipientId||'all'}-${type}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-')
-  clearTombstone(recipientRole==='coach'?'coachNotifications':'notifications',id)
+  const koleksiNotifikasi=recipientRole==='coach'?'coachNotifications':'notifications'
+  // Sama seperti transaksi keuangan: ID notifikasi deterministik, jadi
+  // notifikasi baru memakai ID baru bila ID dasarnya sudah bernisan.
+  const id=nextAvailableDeterministicId(koleksiNotifikasi,`NTF-${recipientRole}-${recipientId||'all'}-${type}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-'),state.__tombstones)
   const list=recipientRole==='coach'?state.coachNotifications:state.notifications
   const index=list.findIndex(n=>n.id===id||(n.referenceType===referenceType&&String(n.referenceId)===String(referenceId)&&String(n.recipientId||n.coachId)===String(recipientId)&&n.type===type))
   const item={id,recipientRole,recipientId,athleteId:athleteId||(recipientRole==='parent'?recipientId:''),coachId:coachId||(recipientRole==='coach'?recipientId:''),title,message,type,referenceType,referenceId,page,deepLink:page,notificationAudience:recipientRole==='coach'?'coach':recipientRole,read:index>=0?Boolean(list[index].read):false,readAt:index>=0?list[index].readAt:null,createdAt:index>=0?list[index].createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}
@@ -1501,7 +1565,16 @@ function cleanupExpiredCompetitionPayments(now=new Date()){
   return {changed:registrations>0||payments>0,registrations,payments}
 }
 function invoiceStatusLabel(status){return status==='paid'?'Lunas':status==='cancelled'?'Dibatalkan':'Belum Dibayar'}
-function nextInvoiceId(){return `INV-${Date.now()}`}
+function nextInvoiceId(){
+  // Berbasis waktu sehingga selalu naik, tetapi tetap diperiksa terhadap nisan
+  // supaya dua tagihan pada milidetik yang sama tidak menabrak ID terhapus.
+  let id=`INV-${Date.now()}`
+  let ke=1
+  while(!isIdSafeForNewRecord('invoices',id,state.__tombstones)||state.invoices?.some(i=>String(i?.id)===id)){
+    id=`INV-${Date.now()}-${++ke}`
+  }
+  return id
+}
 
 const TRAINING_CATEGORIES=['Pemula','Junior','Prestasi']
 const TRAINING_GROUPS=['KU 5B','KU 5A','KU 4','KU 3','KU 2','KU 1']
@@ -1537,8 +1610,13 @@ function validAdminPassword(value){ return /^[A-Za-z0-9]{6}$/.test(String(value|
 function validCoachPassword(value){ return /^[A-Za-z0-9]{6}$/.test(String(value||'')) }
 function validParentPassword(value){ return /^[A-Za-z0-9]{6}$/.test(String(value||'')) }
 function nextCoachId(){
-  const max=(state.coaches||[]).reduce((n,c)=>Math.max(n,Number(String(c.id||'').replace(/\D/g,''))||0),0)
-  return `PLT-${String(max+1).padStart(4,'0')}`
+  // max+1 saja tidak aman: bila pelatih bernomor tertinggi dihapus, nomornya
+  // kembali menjadi "berikutnya" padahal ID itu sudah bernisan.
+  return nextSequentialId('coaches',{
+    prefix:'PLT',
+    existingIds:(state.coaches||[]).map(c=>c?.id),
+    tombstones:state.__tombstones
+  })
 }
 
 function loginPage() {
@@ -1635,7 +1713,11 @@ function loginPage() {
         paymentAccountName:'FAHMI DJAWAS',
         paymentAccountNumber:'1560020198356'
       }
-      clearTombstone('pendingRegistrations',registration.id)
+      // ID pendaftaran dibuat acak. Bila (sangat jarang) ID itu sudah bernisan,
+      // ambil ID lain. Nisan tidak pernah dibatalkan secara lokal.
+      if(!isIdSafeForNewRecord('pendingRegistrations',registration.id,state.__tombstones)){
+        registration.id=nextAvailableDeterministicId('pendingRegistrations',registration.id,state.__tombstones)
+      }
       state.pendingRegistrations.push(registration)
       addAdminNotification('registration','Pendaftar Atlet Baru',`${registration.name} mengirim formulir pendaftaran.`,'registrations')
       await commitCriticalRecord('pendingRegistrations',registration.id)
@@ -2284,7 +2366,7 @@ function downloadAthletesPdf(){
 function athleteTable(){
  const canManage=role==='admin'
  const rows=state.athletes.slice().sort((a,b)=>String(a.id).localeCompare(String(b.id)))
- return `<section class="card"><div class="card-head"><div><h3>Data Atlet</h3><small>${rows.length} atlet terdaftar — ID berikutnya: <b>${nextAthleteId()}</b> — nomor kosong otomatis dipakai kembali</small></div>${canManage?'<div class="athlete-export-actions"><button class="secondary small" id="downloadAthletesPdf">Download PDF</button><button class="secondary small" id="downloadAthletesExcel">Download Excel</button><button class="primary small" id="addAthlete">+ Tambah Atlet</button></div>':''}</div>
+ return `<section class="card"><div class="card-head"><div><h3>Data Atlet</h3><small>${rows.length} atlet terdaftar — ID berikutnya: <b>${nextAthleteId()}</b> — nomor tidak pernah dipakai ulang</small></div>${canManage?'<div class="athlete-export-actions"><button class="secondary small" id="downloadAthletesPdf">Download PDF</button><button class="secondary small" id="downloadAthletesExcel">Download Excel</button><button class="primary small" id="addAthlete">+ Tambah Atlet</button></div>':''}</div>
  <div class="athlete-filter-row"><input id="athleteSearch" placeholder="Cari ID atau nama atlet"><select id="athleteKuFilter"><option value="">Semua KU</option>${['KU 1','KU 2','KU 3','KU 4','KU 5A','KU 5B'].map(x=>`<option>${x}</option>`).join('')}</select></div>
  <div class="table-wrap"><table id="athleteDataTable"><thead><tr><th>Foto</th><th>ID Atlet</th><th>Nama Atlet</th><th>JK</th><th>Tempat, Tanggal Lahir</th><th>Umur</th><th>KU</th><th>Kategori</th><th>Sekolah</th><th>Nomor Telepon</th>${canManage?'<th>Aksi</th>':''}</tr></thead><tbody>
  ${rows.map(a=>`<tr data-athlete-row data-name="${esc((a.id+' '+a.name+' '+(a.schoolName||'')).toLowerCase())}" data-ku="${esc(a.ageGroup||calcGroup(a.birth))}"><td>${a.photo?`<img class="table-avatar" src="${a.photo}" alt="Foto ${esc(a.name)}">`:'<span class="table-avatar placeholder">♟</span>'}</td><td><b>${esc(a.id)}</b></td><td>${esc(a.name)}</td><td>${esc(a.gender||'-')}</td><td>${esc([a.birthPlace,a.birth].filter(Boolean).join(', ')||'-')}</td><td>${Number.isFinite(a.age)?a.age:calcAge(a.birth)} tahun</td><td>${esc(a.ageGroup||calcGroup(a.birth))}</td><td>${esc(a.trainingCategory||'Pemula')}</td><td>${esc(a.schoolName||'-')}</td><td>${esc(a.parentPhone||a.parentWhatsapp||'-')}</td>${canManage?`<td class="action-cell"><button class="secondary tiny" data-view-athlete="${esc(a.id)}">Detail</button><button class="primary tiny" data-edit-athlete="${esc(a.id)}">Edit</button><button class="warning tiny" data-reset-parent-password="${esc(a.id)}">Reset Akun</button><button class="danger tiny" data-delete-athlete="${esc(a.id)}">Hapus</button></td>`:''}</tr>`).join('')}

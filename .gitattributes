@@ -1,0 +1,5 @@
+# src/main.js dan beberapa berkas lama memakai akhir baris CRLF. Tanpa aturan
+# ini, `git diff --check` menganggap setiap CR di akhir baris sebagai spasi
+# berlebih. cr-at-eol memberi tahu git bahwa CR itu bagian dari terminator baris.
+# Aturan ini TIDAK mengubah isi berkas mana pun, hanya cara git memeriksanya.
+* whitespace=cr-at-eol
