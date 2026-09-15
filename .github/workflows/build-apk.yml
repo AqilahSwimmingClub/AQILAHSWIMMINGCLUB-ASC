@@ -72,7 +72,12 @@ jobs:
           ASC_TEST_SUPABASE_KEY: ${{ secrets.ASC_TEST_SUPABASE_KEY }}
         run: node --test tests/supabase-nyata.test.js
 
+      # Seluruh 19 halaman tetap diperiksa di seluruh 14 ukuran layar.
+      # ASC_SHOT_SCOPE hanya membatasi jumlah screenshot bukti yang disimpan,
+      # supaya pipeline tidak menghabiskan waktu menulis ratusan gambar.
       - name: Jalankan E2E responsif pada aplikasi production
+        env:
+          ASC_SHOT_SCOPE: ringkas
         run: npm run test:e2e
 
       - name: Simpan screenshot bukti E2E

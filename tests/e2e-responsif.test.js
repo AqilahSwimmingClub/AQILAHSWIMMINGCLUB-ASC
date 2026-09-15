@@ -17,6 +17,16 @@ import { STATE_UJI, seedStateUji } from './bantu/state-uji.js'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUKTI = process.env.ASC_SHOT_DIR || join(ROOT, 'bukti-responsif')
 
+// Cakupan screenshot. Pemeriksaan tata letak SELALU dijalankan untuk seluruh 19
+// halaman di seluruh ukuran layar; yang diatur di sini hanya berapa banyak
+// screenshot bukti yang disimpan. Mesin CI jauh lebih lambat daripada mesin
+// pengembang, dan menyimpan 294 gambar membuat pipeline berkali-kali lipat lebih
+// lama tanpa menambah nilai pengujian.
+const CAKUPAN_SHOT = process.env.ASC_SHOT_SCOPE === 'ringkas' ? 'ringkas' : 'penuh'
+// Halaman yang paling banyak memuat nominal, tabel, form, dan grafik.
+const HALAMAN_BUKTI = new Set(['dashboard', 'payments', 'registrations', 'athletes', 'coachSalaries'])
+const perluScreenshot = (halamanId) => CAKUPAN_SHOT === 'penuh' || HALAMAN_BUKTI.has(halamanId)
+
 // Seluruh 19 halaman admin, sesuai adminMenu di src/main.js.
 const HALAMAN_ADMIN = [
   ['dashboard', 'Dashboard'], ['notifications', 'Notifikasi'], ['athletes', 'Data Atlet'],
@@ -234,7 +244,7 @@ for (const ukuran of UKURAN) {
       })
       if (ukuran.drawer && drawerTerbuka) temuan.push(`${id}: drawer terbuka sendiri menutupi isi halaman`)
 
-      await page.screenshot({ path: join(BUKTI, `${ukuran.nama}-${id}.png`) })
+      if (perluScreenshot(id)) await page.screenshot({ path: join(BUKTI, `${ukuran.nama}-${id}.png`) })
     }
 
     await page.close()
@@ -333,7 +343,7 @@ test('modal/dialog muat di layar dan dapat ditutup di semua ukuran', async () =>
         assert.ok(ukur.muatTinggi, `${ukuran.nama}/${halaman}: dialog melebihi tinggi layar`)
         assert.ok(ukur.dapatDigulir, `${ukuran.nama}/${halaman}: isi dialog terpotong dan tidak dapat digulir`)
         assert.ok(!ukur.overflowHalaman, `${ukuran.nama}/${halaman}: dialog memicu horizontal scroll`)
-        await page.screenshot({ path: join(BUKTI, `${ukuran.nama}-modal-${halaman}.png`) })
+        if (CAKUPAN_SHOT === 'penuh') await page.screenshot({ path: join(BUKTI, `${ukuran.nama}-modal-${halaman}.png`) })
       }
       await page.evaluate(sel => document.querySelector(sel)?.close(), dialog)
       await page.waitForTimeout(200)
