@@ -177,6 +177,13 @@ const UKUR = () => {
 
 async function siapkanHalaman(ctx, url) {
   const page = await ctx.newPage()
+  // Pengujian tata letak TIDAK BOLEH menyentuh Supabase produksi. Di mesin CI
+  // yang punya internet, aplikasi akan benar-benar terhubung ke basis data
+  // sungguhan: datanya ikut terbaca, tata letak jadi tidak dapat diprediksi,
+  // dan ada risiko penulisan. Seluruh permintaan ke Supabase diputus di sini,
+  // sehingga tes selalu berjalan di atas state uji yang ditanam sendiri.
+  await page.route('**://*.supabase.co/**', route => route.abort())
+  await page.route('**://*.supabase.in/**', route => route.abort())
   const errorJs = []
   const resourceGagal = []
   page.on('pageerror', e => errorJs.push(String(e?.message || e)))
