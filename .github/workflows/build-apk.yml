@@ -195,15 +195,48 @@ jobs:
           echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
           echo "debug_apk=${DEBUG_APK}" >> "$GITHUB_OUTPUT"
 
+      # apkanalyzer membaca manifest APK secara langsung. `aapt2 dump badging`
+      # tidak selalu mencetak baris minSdk, jadi tidak dapat dipakai untuk itu.
       - name: Periksa identitas APK
         run: |
           set -euo pipefail
+          APK="keluaran-apk/${{ steps.apk.outputs.debug_apk }}"
+          APKANALYZER=$(find "${ANDROID_SDK_ROOT}" -type f -name apkanalyzer 2>/dev/null | head -1)
+          if [ -z "${APKANALYZER}" ]; then
+            echo "apkanalyzer tidak ditemukan di Android SDK."
+            exit 1
+          fi
+          APP_ID=$("${APKANALYZER}" manifest application-id "${APK}")
+          MIN_SDK=$("${APKANALYZER}" manifest min-sdk "${APK}")
+          TARGET_SDK=$("${APKANALYZER}" manifest target-sdk "${APK}")
+          VERSION_CODE=$("${APKANALYZER}" manifest version-code "${APK}")
+          VERSION_NAME=$("${APKANALYZER}" manifest version-name "${APK}")
+
           AAPT=$(find "${ANDROID_SDK_ROOT}/build-tools" -name aapt2 | sort | tail -1)
-          "${AAPT}" dump badging "keluaran-apk/${{ steps.apk.outputs.debug_apk }}" | grep -E "^package|sdkVersion|targetSdkVersion" | tee identitas-apk.txt
-          grep -q "com.aqilahswimmingclub.app" identitas-apk.txt || { echo "applicationId tidak sesuai"; exit 1; }
-          grep -q "sdkVersion:'29'" identitas-apk.txt || { echo "minSdk bukan 29"; exit 1; }
-          grep -q "targetSdkVersion:'35'" identitas-apk.txt || { echo "targetSdk bukan 35"; exit 1; }
-          echo "applicationId, minSdk, dan targetSdk sesuai."
+          {
+            echo "applicationId: ${APP_ID}"
+            echo "versionName:   ${VERSION_NAME}"
+            echo "versionCode:   ${VERSION_CODE}"
+            echo "minSdk:        ${MIN_SDK}"
+            echo "targetSdk:     ${TARGET_SDK}"
+            echo "--- aapt2 badging ---"
+            "${AAPT}" dump badging "${APK}" | grep -E "^package|sdkVersion" || true
+          } | tee identitas-apk.txt
+
+          gagal=0
+          periksa() {
+            if [ "$2" != "$3" ]; then
+              echo "$1 tidak sesuai: '$2' (diharapkan '$3')"
+              gagal=1
+            fi
+          }
+          periksa applicationId "${APP_ID}" "com.aqilahswimmingclub.app"
+          periksa minSdk "${MIN_SDK}" "29"
+          periksa targetSdk "${TARGET_SDK}" "35"
+          periksa versionName "${VERSION_NAME}" "${{ steps.apk.outputs.version_name }}"
+          periksa versionCode "${VERSION_CODE}" "${{ steps.apk.outputs.version_code }}"
+          [ "${gagal}" -eq 0 ] || exit 1
+          echo "applicationId, versionName, versionCode, minSdk, dan targetSdk sesuai."
 
       - name: Unggah APK debug
         uses: actions/upload-artifact@v4
