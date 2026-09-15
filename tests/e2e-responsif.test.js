@@ -23,6 +23,10 @@ const BUKTI = process.env.ASC_SHOT_DIR || join(ROOT, 'bukti-responsif')
 // pengembang, dan menyimpan 294 gambar membuat pipeline berkali-kali lipat lebih
 // lama tanpa menambah nilai pengujian.
 const CAKUPAN_SHOT = process.env.ASC_SHOT_SCOPE === 'ringkas' ? 'ringkas' : 'penuh'
+// Batas waktu tiap tes ukuran layar. Mesin CI jauh lebih lambat, tetapi satu
+// halaman yang macet harus menggagalkan tesnya sendiri dengan cepat, bukan
+// menyandera seluruh pipeline sampai batas waktu job.
+const BATAS_TES_MS = Number(process.env.ASC_E2E_TIMEOUT_MS || 420000)
 // Halaman yang paling banyak memuat nominal, tabel, form, dan grafik.
 const HALAMAN_BUKTI = new Set(['dashboard', 'payments', 'registrations', 'athletes', 'coachSalaries'])
 const perluScreenshot = (halamanId) => CAKUPAN_SHOT === 'penuh' || HALAMAN_BUKTI.has(halamanId)
@@ -253,7 +257,7 @@ for (const ukuran of UKURAN) {
     assert.deepEqual(errorJs, [], `error JavaScript pada ${ukuran.nama}`)
     assert.deepEqual(resourceGagal, [], `resource aplikasi gagal dimuat pada ${ukuran.nama}`)
     assert.deepEqual(temuan, [], `temuan tata letak pada ${ukuran.nama}`)
-  }, { timeout: 420000 })
+  }, { timeout: BATAS_TES_MS })
 }
 
 test('drawer: tertutup di layar sempit, dapat dibuka dan ditutup kembali', async () => {
@@ -350,4 +354,4 @@ test('modal/dialog muat di layar dan dapat ditutup di semua ukuran', async () =>
     }
     await page.close(); await ctx.close()
   }
-}, { timeout: 420000 })
+}, { timeout: BATAS_TES_MS })

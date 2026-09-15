@@ -59,9 +59,11 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Jalankan seluruh unit test dan tes tombstone
+        timeout-minutes: 5
         run: npm run test:unit
 
       - name: Jalankan tes tata letak
+        timeout-minutes: 10
         run: npm run test:tata-letak
 
       # Tes Supabase nyata hanya berjalan bila secret pengujian tersedia.
@@ -76,8 +78,12 @@ jobs:
       # ASC_SHOT_SCOPE hanya membatasi jumlah screenshot bukti yang disimpan,
       # supaya pipeline tidak menghabiskan waktu menulis ratusan gambar.
       - name: Jalankan E2E responsif pada aplikasi production
+        timeout-minutes: 20
         env:
           ASC_SHOT_SCOPE: ringkas
+          # CI hanya punya dua inti. Tanpa batas ini, satu halaman yang macet
+          # menyandera seluruh pipeline sampai batas waktu job.
+          ASC_E2E_TIMEOUT_MS: '180000'
         run: npm run test:e2e
 
       - name: Simpan screenshot bukti E2E
@@ -126,6 +132,7 @@ jobs:
           echo "Aset web APK cocok dengan build commit ini: ${BUNDEL_DIST}"
 
       - name: Bangun APK debug
+        timeout-minutes: 20
         working-directory: android
         run: ./gradlew --no-daemon assembleDebug
 
