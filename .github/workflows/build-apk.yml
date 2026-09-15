@@ -1,30 +1,57 @@
 # Menjalankan seluruh pengujian lalu membangun APK Android AQILAH Swimming Club.
 #
-# Konfigurasi Android yang sudah ada dipertahankan apa adanya:
-#   applicationId com.aqilahswimmingclub.app, minSdk 29, targetSdk 35,
-#   google-services.json, aset web, dan kompatibilitas update aplikasi.
-# APK TIDAK pernah di-commit ke repository; hasilnya diunggah sebagai artifact.
+# Dua jenis APK, dengan status yang berbeda dan TIDAK boleh tertukar:
+#
+#   * APK debug   - hanya untuk pengujian internal. Ditandatangani kunci debug,
+#                   sehingga TIDAK dapat memperbarui aplikasi yang sudah
+#                   terpasang. Artifact-nya diberi nama yang menyatakan hal itu.
+#   * APK release - APK pembaruan yang sesungguhnya. Hanya dibangun bila seluruh
+#                   secret penandatanganan tersedia, dan hanya dinyatakan
+#                   sebagai pembaruan bila sertifikatnya terbukti sama dengan
+#                   APK lama.
+#
+# Konfigurasi Android yang sudah ada dipertahankan apa adanya: applicationId
+# com.aqilahswimmingclub.app, minSdk 29 (Android 10), targetSdk 35,
+# google-services.json, dan seluruh aset aplikasi.
 name: Uji dan Bangun APK
 
 on:
   push:
     branches:
+      - main
       - claude/relaxed-meitner-rx6lgd
   workflow_dispatch:
+    inputs:
+      buat_release:
+        description: 'Buat GitHub Release untuk APK release yang terverifikasi'
+        type: boolean
+        default: true
 
-# Jalankan satu per satu per branch supaya artifact tidak saling menimpa.
 concurrency:
   group: build-apk-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
+
+env:
+  # Sidik jari SHA-256 sertifikat APK lama. Sidik jari sertifikat bukan rahasia:
+  # nilainya tercetak di setiap APK. Bila secret ASC_CERT_SHA256_LAMA diisi,
+  # APK release wajib memakai sertifikat itu; bila kosong, kesamaan tanda tangan
+  # tidak dapat dibuktikan dan APK tidak akan disebut APK pembaruan.
+  TARGET_SDK_MINIMAL: '35'
 
 jobs:
   uji-dan-bangun:
     name: Uji, build web, dan bangun APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    outputs:
+      release_terverifikasi: ${{ steps.verifikasi_release.outputs.terverifikasi }}
+      version_name: ${{ steps.versi.outputs.version_name }}
+      version_code: ${{ steps.versi.outputs.version_code }}
+      nama_apk_release: ${{ steps.kumpulkan.outputs.nama_apk_release }}
 
     steps:
       - name: Ambil commit yang tepat
@@ -42,14 +69,11 @@ jobs:
       - name: Pasang dependensi
         run: npm ci
 
-      # Cache browser Playwright dikunci ke versi paketnya, sehingga tidak pernah
-      # memakai browser yang tidak cocok setelah dependensi diperbarui.
       - name: Tentukan versi Playwright
         id: playwright
         run: echo "versi=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache browser Playwright
-        id: cache-playwright
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -58,31 +82,25 @@ jobs:
       - name: Pasang Chromium Playwright
         run: npx playwright install --with-deps chromium
 
-      - name: Jalankan seluruh unit test dan tes tombstone
+      - name: Unit test, tes tombstone, tes ID, dan verifikasi APK
         timeout-minutes: 5
         run: npm run test:unit
 
-      - name: Jalankan tes tata letak
+      - name: Tes tata letak
         timeout-minutes: 10
         run: npm run test:tata-letak
 
-      # Tes Supabase nyata hanya berjalan bila secret pengujian tersedia.
-      # Tanpa secret, tes ini melewati dirinya sendiri dengan keterangan jelas.
-      - name: Jalankan tes sinkronisasi Supabase nyata (opsional)
+      - name: Tes sinkronisasi Supabase nyata (opsional)
+        timeout-minutes: 10
         env:
           ASC_TEST_SUPABASE_URL: ${{ secrets.ASC_TEST_SUPABASE_URL }}
           ASC_TEST_SUPABASE_KEY: ${{ secrets.ASC_TEST_SUPABASE_KEY }}
-        run: node --test tests/supabase-nyata.test.js
+        run: npm run test:supabase
 
-      # Seluruh 19 halaman tetap diperiksa di seluruh 14 ukuran layar.
-      # ASC_SHOT_SCOPE hanya membatasi jumlah screenshot bukti yang disimpan,
-      # supaya pipeline tidak menghabiskan waktu menulis ratusan gambar.
-      - name: Jalankan E2E responsif pada aplikasi production
+      - name: E2E responsif pada aplikasi production
         timeout-minutes: 20
         env:
           ASC_SHOT_SCOPE: ringkas
-          # CI hanya punya dua inti. Tanpa batas ini, satu halaman yang macet
-          # menyandera seluruh pipeline sampai batas waktu job.
           ASC_E2E_TIMEOUT_MS: '180000'
         run: npm run test:e2e
 
@@ -124,21 +142,29 @@ jobs:
       - name: Pastikan aset web APK berasal dari commit ini
         run: |
           set -euo pipefail
-          BUNDEL_DIST=$(ls dist/assets/index-*.js | head -1 | xargs basename)
-          if [ ! -f "android/app/src/main/assets/public/assets/${BUNDEL_DIST}" ]; then
-            echo "Aset web Android tidak cocok dengan hasil build commit ini (${BUNDEL_DIST} tidak ada)."
+          BUNDEL=$(ls dist/assets/index-*.js | head -1 | xargs basename)
+          if [ ! -f "android/app/src/main/assets/public/assets/${BUNDEL}" ]; then
+            echo "Aset web Android tidak cocok dengan hasil build commit ini (${BUNDEL} tidak ada)."
             exit 1
           fi
-          echo "Aset web APK cocok dengan build commit ini: ${BUNDEL_DIST}"
+          echo "Aset web APK cocok dengan build commit ini: ${BUNDEL}"
 
-      - name: Bangun APK debug
+      - name: Baca versi aplikasi
+        id: versi
+        run: |
+          set -euo pipefail
+          echo "version_name=$(grep -E '^ascVersionName=' android/gradle.properties | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+          echo "version_code=$(grep -E '^ascVersionCode=' android/gradle.properties | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+
+      # --- APK debug: HANYA untuk pengujian, bukan APK pembaruan -------------
+      - name: Bangun APK debug (hanya untuk pengujian)
         timeout-minutes: 20
         working-directory: android
         run: ./gradlew --no-daemon assembleDebug
 
-      # Keystore rilis hanya dibuat bila seluruh secret-nya tersedia.
-      # Nilai secret tidak pernah dicetak ke log.
-      - name: Siapkan keystore rilis (bila secret tersedia)
+      # --- Penandatanganan release ------------------------------------------
+      # Nilai secret tidak pernah dicetak. Keystore hanya ada selama job berjalan.
+      - name: Siapkan keystore rilis
         id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -149,7 +175,8 @@ jobs:
           set -euo pipefail
           if [ -z "${KEYSTORE_BASE64}" ] || [ -z "${KEYSTORE_PASSWORD}" ] || [ -z "${KEY_ALIAS}" ] || [ -z "${KEY_PASSWORD}" ]; then
             echo "tersedia=false" >> "$GITHUB_OUTPUT"
-            echo "Secret penandatanganan belum lengkap. Hanya APK debug yang dibuat."
+            echo "Secret penandatanganan belum lengkap. APK release TIDAK dibangun."
+            echo "Hanya APK debug yang tersedia, dan APK debug tidak dapat memperbarui aplikasi terpasang."
             exit 0
           fi
           printf '%s' "${KEYSTORE_BASE64}" | base64 -d > android/asc-release.jks
@@ -164,108 +191,136 @@ jobs:
 
       - name: Bangun APK release bertanda tangan
         if: steps.signing.outputs.tersedia == 'true'
+        timeout-minutes: 20
         working-directory: android
         run: ./gradlew --no-daemon assembleRelease
 
-      - name: Verifikasi tanda tangan APK release
+      # --- Verifikasi: identitas, tanda tangan, dan kelayakan pembaruan ------
+      - name: Verifikasi APK release
+        id: verifikasi_release
+        if: steps.signing.outputs.tersedia == 'true'
+        env:
+          CERT_LAMA: ${{ secrets.ASC_CERT_SHA256_LAMA }}
+          VERSION_CODE_LAMA: ${{ secrets.ASC_VERSION_CODE_LAMA }}
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          ARG=(--apk "${APK}" --target-sdk-minimal "${TARGET_SDK_MINIMAL}" --json verifikasi-release.json)
+          if [ -n "${CERT_LAMA}" ]; then ARG+=(--sidik-jari "${CERT_LAMA}"); fi
+          if [ -n "${VERSION_CODE_LAMA}" ]; then ARG+=(--version-code-lama "${VERSION_CODE_LAMA}"); fi
+
+          set +e
+          node scripts/verifikasi-apk.cjs "${ARG[@]}"
+          KODE=$?
+          set -e
+
+          # 0 = terbukti dapat memperbarui; 2 = APK sah tetapi acuan APK lama
+          # tidak tersedia; selain itu = benar-benar gagal.
+          if [ "${KODE}" -eq 0 ]; then
+            echo "terverifikasi=true" >> "$GITHUB_OUTPUT"
+          elif [ "${KODE}" -eq 2 ]; then
+            echo "terverifikasi=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::APK release sah, tetapi kesamaan sertifikat dengan APK lama belum dapat dibuktikan karena secret ASC_CERT_SHA256_LAMA belum diisi. APK ini belum boleh disebut APK pembaruan."
+          else
+            echo "::error::APK release tidak memenuhi syarat sebagai pembaruan."
+            exit 1
+          fi
+
+      - name: Verifikasi tanda tangan dengan apksigner
         if: steps.signing.outputs.tersedia == 'true'
         run: |
           set -euo pipefail
           APKSIGNER=$(find "${ANDROID_SDK_ROOT}/build-tools" -name apksigner | sort | tail -1)
           "${APKSIGNER}" verify --verbose --print-certs android/app/build/outputs/apk/release/app-release.apk
 
+      # --- Kumpulkan keluaran ------------------------------------------------
       - name: Kumpulkan APK dan hitung SHA-256
-        id: apk
+        id: kumpulkan
         run: |
           set -euo pipefail
           mkdir -p keluaran-apk
-          VERSION_NAME=$(grep -E '^ascVersionName=' android/gradle.properties | cut -d= -f2)
-          VERSION_CODE=$(grep -E '^ascVersionCode=' android/gradle.properties | cut -d= -f2)
+          VN="${{ steps.versi.outputs.version_name }}"
+          VC="${{ steps.versi.outputs.version_code }}"
           PENDEK="${GITHUB_SHA::7}"
 
-          DEBUG_SRC=android/app/build/outputs/apk/debug/app-debug.apk
-          DEBUG_APK="ASC-${VERSION_NAME}-${VERSION_CODE}-debug-${PENDEK}.apk"
-          cp "${DEBUG_SRC}" "keluaran-apk/${DEBUG_APK}"
+          # APK debug diberi nama yang menyatakan statusnya, supaya tidak pernah
+          # dikira APK pembaruan.
+          DEBUG_APK="ASC-${VN}-${VC}-DEBUG-UJI-SAJA-${PENDEK}.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "keluaran-apk/${DEBUG_APK}"
+          echo "nama_apk_debug=${DEBUG_APK}" >> "$GITHUB_OUTPUT"
 
           RELEASE_SRC=android/app/build/outputs/apk/release/app-release.apk
           if [ -f "${RELEASE_SRC}" ]; then
-            RELEASE_APK="ASC-${VERSION_NAME}-${VERSION_CODE}-release-${PENDEK}.apk"
+            RELEASE_APK="ASC-${VN}-${VC}-release-${PENDEK}.apk"
             cp "${RELEASE_SRC}" "keluaran-apk/${RELEASE_APK}"
+            echo "nama_apk_release=${RELEASE_APK}" >> "$GITHUB_OUTPUT"
           fi
 
           cd keluaran-apk
           sha256sum *.apk > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          cd ..
 
-          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
-          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
-          echo "debug_apk=${DEBUG_APK}" >> "$GITHUB_OUTPUT"
-
-      # apkanalyzer membaca manifest APK secara langsung. `aapt2 dump badging`
-      # tidak selalu mencetak baris minSdk, jadi tidak dapat dipakai untuk itu.
-      - name: Periksa identitas APK
+      - name: Periksa identitas APK debug
         run: |
           set -euo pipefail
-          APK="keluaran-apk/${{ steps.apk.outputs.debug_apk }}"
-          APKANALYZER=$(find "${ANDROID_SDK_ROOT}" -type f -name apkanalyzer 2>/dev/null | head -1)
-          if [ -z "${APKANALYZER}" ]; then
-            echo "apkanalyzer tidak ditemukan di Android SDK."
-            exit 1
-          fi
-          APP_ID=$("${APKANALYZER}" manifest application-id "${APK}")
-          MIN_SDK=$("${APKANALYZER}" manifest min-sdk "${APK}")
-          TARGET_SDK=$("${APKANALYZER}" manifest target-sdk "${APK}")
-          VERSION_CODE=$("${APKANALYZER}" manifest version-code "${APK}")
-          VERSION_NAME=$("${APKANALYZER}" manifest version-name "${APK}")
+          node scripts/verifikasi-apk.cjs \
+            --apk "keluaran-apk/${{ steps.kumpulkan.outputs.nama_apk_debug }}" \
+            --target-sdk-minimal "${TARGET_SDK_MINIMAL}" || KODE=$?
+          # Kode 2 wajar untuk APK debug: identitasnya benar, tetapi memang tidak
+          # punya acuan APK lama dan memang bukan APK pembaruan.
+          if [ "${KODE:-0}" -gt 2 ]; then exit 1; fi
+          echo "Identitas APK debug sesuai (applicationId, minSdk 29, targetSdk)."
 
-          AAPT=$(find "${ANDROID_SDK_ROOT}/build-tools" -name aapt2 | sort | tail -1)
-          {
-            echo "applicationId: ${APP_ID}"
-            echo "versionName:   ${VERSION_NAME}"
-            echo "versionCode:   ${VERSION_CODE}"
-            echo "minSdk:        ${MIN_SDK}"
-            echo "targetSdk:     ${TARGET_SDK}"
-            echo "--- aapt2 badging ---"
-            "${AAPT}" dump badging "${APK}" | grep -E "^package|sdkVersion" || true
-          } | tee identitas-apk.txt
-
-          gagal=0
-          periksa() {
-            if [ "$2" != "$3" ]; then
-              echo "$1 tidak sesuai: '$2' (diharapkan '$3')"
-              gagal=1
-            fi
-          }
-          periksa applicationId "${APP_ID}" "com.aqilahswimmingclub.app"
-          periksa minSdk "${MIN_SDK}" "29"
-          periksa targetSdk "${TARGET_SDK}" "35"
-          periksa versionName "${VERSION_NAME}" "${{ steps.apk.outputs.version_name }}"
-          periksa versionCode "${VERSION_CODE}" "${{ steps.apk.outputs.version_code }}"
-          [ "${gagal}" -eq 0 ] || exit 1
-          echo "applicationId, versionName, versionCode, minSdk, dan targetSdk sesuai."
-
-      - name: Unggah APK debug
+      - name: Unggah APK debug (bukan APK pembaruan)
         uses: actions/upload-artifact@v4
         with:
-          name: asc-apk-debug-${{ steps.apk.outputs.version_name }}-${{ steps.apk.outputs.version_code }}
+          name: asc-apk-DEBUG-UJI-SAJA-${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
           path: |
-            keluaran-apk/*debug*.apk
+            keluaran-apk/*DEBUG-UJI-SAJA*.apk
             keluaran-apk/SHA256SUMS.txt
-            identitas-apk.txt
-          retention-days: 30
+          retention-days: 14
           if-no-files-found: error
 
-      - name: Unggah APK release bertanda tangan
+      - name: Unggah APK release
         if: steps.signing.outputs.tersedia == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: asc-apk-release-${{ steps.apk.outputs.version_name }}-${{ steps.apk.outputs.version_code }}
+          name: asc-apk-release-${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
           path: |
             keluaran-apk/*release*.apk
             keluaran-apk/SHA256SUMS.txt
-          retention-days: 30
+            verifikasi-release.json
+          retention-days: 90
           if-no-files-found: error
+
+      # Artifact hilang setelah masa simpannya habis, jadi APK release yang sudah
+      # terbukti sebagai pembaruan disimpan permanen sebagai GitHub Release.
+      - name: Buat GitHub Release untuk APK yang terverifikasi
+        if: steps.verifikasi_release.outputs.terverifikasi == 'true' && (github.event_name != 'workflow_dispatch' || inputs.buat_release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
+          name: ASC ${{ steps.versi.outputs.version_name }} (versionCode ${{ steps.versi.outputs.version_code }})
+          body: |
+            APK pembaruan AQILAH Swimming Club.
+
+            Sertifikat penandatangan terbukti sama dengan APK lama, dan versionCode
+            lebih tinggi. Pasang langsung menimpa aplikasi yang sudah ada di HP.
+            **Jangan uninstall** — data aplikasi, sesi login, dan cache dipertahankan.
+
+            - applicationId: `com.aqilahswimmingclub.app`
+            - versionName: `${{ steps.versi.outputs.version_name }}`
+            - versionCode: `${{ steps.versi.outputs.version_code }}`
+            - minSdk: `29` (Android 10 ke atas)
+            - targetSdk: `35`
+            - Commit: `${{ github.sha }}`
+
+            SHA-256 setiap berkas ada di `SHA256SUMS.txt`.
+          files: |
+            keluaran-apk/*release*.apk
+            keluaran-apk/SHA256SUMS.txt
+          draft: false
+          prerelease: false
 
       - name: Hapus berkas rahasia dari runner
         if: always()
@@ -279,10 +334,32 @@ jobs:
             echo ""
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- applicationId: \`com.aqilahswimmingclub.app\`"
-            echo "- versionName: \`${{ steps.apk.outputs.version_name }}\`"
-            echo "- versionCode: \`${{ steps.apk.outputs.version_code }}\`"
-            echo "- minSdk 29, targetSdk 35"
-            echo "- APK release bertanda tangan: ${{ steps.signing.outputs.tersedia == 'true' && 'ya' || 'tidak (secret belum tersedia)' }}"
+            echo "- versionName: \`${{ steps.versi.outputs.version_name }}\`"
+            echo "- versionCode: \`${{ steps.versi.outputs.version_code }}\`"
+            echo "- minSdk 29 (Android 10 ke atas), targetSdk 35"
+            echo ""
+            if [ "${{ steps.signing.outputs.tersedia }}" != "true" ]; then
+              echo "### APK release: TIDAK dibangun"
+              echo ""
+              echo "Secret penandatanganan belum lengkap. Yang tersedia hanya APK debug,"
+              echo "dan **APK debug tidak dapat memperbarui aplikasi yang sudah terpasang**"
+              echo "karena ditandatangani kunci yang berbeda."
+              echo ""
+              echo "Tambahkan secret berikut agar APK pembaruan dapat dibuat:"
+              echo "\`ANDROID_KEYSTORE_BASE64\`, \`ANDROID_KEYSTORE_PASSWORD\`,"
+              echo "\`ANDROID_KEY_ALIAS\`, \`ANDROID_KEY_PASSWORD\`, dan"
+              echo "\`ASC_CERT_SHA256_LAMA\` (sidik jari sertifikat APK lama)."
+            elif [ "${{ steps.verifikasi_release.outputs.terverifikasi }}" = "true" ]; then
+              echo "### APK release: TERVERIFIKASI sebagai APK pembaruan"
+              echo ""
+              echo "Sertifikat sama dengan APK lama dan versionCode naik."
+              echo "Pasang langsung menimpa aplikasi lama, tanpa uninstall."
+            else
+              echo "### APK release: dibangun, tetapi BELUM terbukti sebagai pembaruan"
+              echo ""
+              echo "Secret \`ASC_CERT_SHA256_LAMA\` belum diisi, sehingga kesamaan"
+              echo "sertifikat dengan APK lama tidak dapat dibuktikan."
+            fi
             echo ""
             if [ -f keluaran-apk/SHA256SUMS.txt ]; then
               echo "### SHA-256"

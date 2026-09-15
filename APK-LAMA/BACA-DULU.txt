@@ -1,0 +1,22 @@
+Folder ini tempat menaruh APK LAMA - yaitu APK yang dipakai memasang
+aplikasi AQILAH Swimming Club yang sekarang ada di HP.
+
+Kenapa diperlukan
+-----------------
+Android memakai tanda tangan APK sebagai identitas aplikasi. APK baru hanya
+bisa dipasang menimpa aplikasi lama bila ditandatangani dengan kunci yang sama
+persis. Kalau kuncinya berbeda, Android menolak dengan pesan
+INSTALL_FAILED_UPDATE_INCOMPATIBLE ("App not installed") dan satu-satunya jalan
+adalah uninstall - yang menghapus data aplikasi.
+
+BUAT-APK-UPDATE.bat membandingkan sertifikat APK baru dengan APK lama di folder
+ini. Tanpa berkas itu, skrip tetap membuat APK, tetapi menolak menyebutnya APK
+pembaruan karena kesamaan tanda tangan belum terbukti.
+
+Cara pakai
+----------
+1. Salin APK lama ke folder ini. Nama berkas bebas, yang penting berakhiran .apk
+2. Jalankan BUAT-APK-UPDATE.bat
+3. Bila ada lebih dari satu APK, yang dipakai adalah yang paling baru.
+
+Berkas .apk di folder ini tidak pernah ikut masuk git.

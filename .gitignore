@@ -23,3 +23,7 @@ bukti-responsif/
 *.aab
 keluaran-apk/
 identitas-apk.txt
+
+# Keluaran APK pembaruan dan salinan APK lama tidak pernah masuk git.
+HASIL-APK-UPDATE/
+APK-LAMA/*.apk
