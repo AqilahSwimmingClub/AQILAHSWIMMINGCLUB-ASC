@@ -7,7 +7,7 @@ import autoTable from 'jspdf-autotable'
 import {
   recordIdentity, isTombstoned as isTombstonedIn, markTombstone as markTombstoneIn,
   clearTombstone as clearTombstoneIn, mergeTombstoneMaps, withoutTombstoned, purgeTombstoned,
-  resurrectedIds, pendingTombstoneIds, markTombstoneSynced,
+  resurrectedIds, pendingTombstoneIds, commitTombstone,
   mergeStateWithoutLoss as mergeStateWithoutLossPure, resolveCollectionFromSources
 } from './lib/sync-merge.js'
 
@@ -402,31 +402,33 @@ async function upsertAthleteRecord(item){
 function tombstonePlaceholder(id,deletedAt){
   return {id:String(id),deletedAt,direction:'income',amount:0,status:'deleted',recipientRole:'admin'}
 }
+// Aturannya ada di commitTombstone() (src/lib/sync-merge.js) supaya dapat diuji:
+// nisan hanya ditandai tersinkron bila Supabase benar-benar menerimanya, dan
+// setiap kegagalan otomatis masuk antrean retry.
 async function writeRemoteTombstone(collection,id){
   const cfg=ROW_COLLECTIONS[collection]
   if(!cfg)throw new Error(`Konfigurasi tabel ${collection} tidak ditemukan.`)
-  const deletedAt=new Date().toISOString()
   markLocalRowWrite(cfg.table,id)
-  const {data,error}=await supabase.from(cfg.table)
-    .update({deleted_at:deletedAt,updated_at:deletedAt})
-    .eq('legacy_id',String(id))
-    .select('legacy_id')
-  if(error){
-    console.error(`Supabase ${cfg.table} gagal menandai satu record terhapus:`,error)
-    throw new Error(`${cfg.table}: ${error.message||error}`)
-  }
-  if(!Array.isArray(data)||!data.length){
-    // Baris nisan dibentuk lewat toRow() milik tabelnya sendiri agar seluruh
-    // kolom wajib (mis. direction pada asc_finance_transactions) tetap terisi.
-    const row={...cfg.toRow(tombstonePlaceholder(id,deletedAt)),legacy_id:String(id),deleted_at:deletedAt,updated_at:deletedAt}
-    const {error:insertError}=await supabase.from(cfg.table).upsert(row,{onConflict:'legacy_id'})
-    // Kegagalan di sini tidak menggagalkan penghapusan: nisan lokal sudah
-    // tercatat dan payload legacy sudah dibersihkan saat saveRemote(), jadi
-    // record tetap terhapus di semua perangkat.
-    if(insertError)console.warn(`Supabase ${cfg.table} tidak dapat menyimpan baris nisan; penghapusan tetap berlaku lewat nisan lokal.`,insertError)
-  }
-  markTombstoneSynced(state.__tombstones,collection,id,deletedAt)
-  return true
+  return commitTombstone(collection,id,{
+    tombstones:state.__tombstones,
+    queueRetry:queueOfflineDelete,
+    updateDeletedAt:async deletedAt=>{
+      const {data,error}=await supabase.from(cfg.table)
+        .update({deleted_at:deletedAt,updated_at:deletedAt})
+        .eq('legacy_id',String(id))
+        .select('legacy_id')
+      if(error)console.error(`Supabase ${cfg.table} gagal menandai satu record terhapus:`,error)
+      return {rows:Array.isArray(data)?data.length:0,error}
+    },
+    insertTombstoneRow:async deletedAt=>{
+      // Baris nisan dibentuk lewat toRow() milik tabelnya sendiri agar seluruh
+      // kolom wajib (mis. direction pada asc_finance_transactions) tetap terisi.
+      const row={...cfg.toRow(tombstonePlaceholder(id,deletedAt)),legacy_id:String(id),deleted_at:deletedAt,updated_at:deletedAt}
+      const {error}=await supabase.from(cfg.table).upsert(row,{onConflict:'legacy_id'})
+      if(error)console.error(`Supabase ${cfg.table} gagal menyimpan baris nisan:`,error)
+      return {error}
+    }
+  })
 }
 async function softDeleteAthleteRecord(id){
   return writeRemoteTombstone('athletes',id)
@@ -978,7 +980,7 @@ async function saveRemote() {
     }
     // Jangan menandai selesai jika ada perubahan baru saat proses upload berlangsung.
     pendingRemoteSave = Number(state.__sync?.revision||0) > Number(data?.payload?.__sync?.revision||snapshotRevision)
-    syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':'HP dan website sudah tersinkron'
+    syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':syncedStatusText()
     if(pendingRemoteSave)scheduleRemoteRetry(150)
   } catch(error) {
     appendRecoveryJournal('remote-save-error',{message:error?.message||String(error),counts:criticalCounts(localSnapshot)})
@@ -1021,7 +1023,7 @@ async function loadRemote({renderAfter=false,attempt=1}={}) {
     const rowsChanged=await loadRowCollections()
     changed=changed||rowsChanged
     if(renderAfter&&changed)renderRemoteUpdateSafely()
-    syncStatus=pendingRemoteSave?'Perubahan lokal menunggu sinkronisasi':'HP dan website sudah tersinkron'
+    syncStatus=pendingRemoteSave?'Perubahan lokal menunggu sinkronisasi':syncedStatusText()
   } catch(error) {
     const message=error?.message||error?.details||String(error||'Koneksi gagal')
     if(attempt<3 && navigator.onLine){
@@ -1064,7 +1066,7 @@ function subscribeRealtime() {
       const localRevision=Number(state.__sync?.revision||0)
       const fromThisDevice=remote.__sync?.clientId===CLIENT_ID
       if(fromThisDevice && remoteRevision<=localRevision){
-        syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':'HP dan website sudah tersinkron'
+        syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':syncedStatusText()
         updateSync();return
       }
       // Jika perangkat ini sedang memiliki perubahan yang belum terkirim, jangan timpa.
@@ -1074,12 +1076,12 @@ function subscribeRealtime() {
         updateSync();scheduleRemoteRetry(100);return
       }
       if(remoteRevision===localRevision && remote.__sync?.clientId===state.__sync?.clientId){
-        syncStatus='HP dan website sudah tersinkron'
+        syncStatus=syncedStatusText()
         updateSync();return
       }
       const changed=applyRemotePayloadPreservingDedicated(remote)
       if(!changed){
-        syncStatus='HP dan website sudah tersinkron'
+        syncStatus=syncedStatusText()
         updateSync();return
       }
       normalize();saveLocal()
@@ -1133,6 +1135,18 @@ document.addEventListener('visibilitychange',()=>{
 window.addEventListener('pagehide',()=>{if(pendingRemoteSave&&navigator.onLine)saveRemote()})
 document.addEventListener('focusout',()=>setTimeout(finishDeferredRemoteRender,150),true)
 function updateSync() { const e=document.querySelector('#syncBadge');if(e)e.textContent=syncStatus }
+// Selama masih ada nisan yang belum dikonfirmasi Supabase (atau antrean hapus
+// offline belum kosong), aplikasi tidak boleh menyatakan dirinya tersinkron:
+// perangkat lain masih bisa menampilkan data yang sudah dihapus di sini.
+function hasPendingDeletions(){
+  if(deleteOfflineQueue().length)return true
+  return ROW_COLLECTION_KEYS.some(key=>pendingTombstoneIds(key,state.__tombstones).length>0)
+}
+// Satu tempat untuk menentukan kalimat "sudah tersinkron", supaya statusnya
+// tidak pernah lebih optimistis daripada keadaan sebenarnya.
+function syncedStatusText(){
+  return hasPendingDeletions()?'Penghapusan menunggu sinkronisasi':'HP dan website sudah tersinkron'
+}
 // Satu sumber kebenaran untuk "layar sempit". Nilainya harus sama persis dengan
 // @media (max-width:1100px) di style.css, supaya tombol menu, drawer, dan lebar
 // isi halaman tidak pernah berbeda pendapat di tablet ~1000-1100 px.
@@ -1288,11 +1302,14 @@ async function deleteInvoiceSafely(id){
   // Nisan dicatat lebih dulu supaya penghapusan tetap tercatat (dan dicoba ulang)
   // walau panggilan Supabase gagal di tengah jalan.
   markTombstone('invoices',id)
-  await softDeleteDedicatedRecord('invoices',id)
   state.invoices.splice(index,1)
   addAudit('Hapus','invoices',id,record?.title||record?.athleteName||'')
   addVersionSnapshot('Hapus invoices')
   saveSafetySnapshot(state);render();queueSave()
+  // Bila Supabase menolak, nisan tetap pending dan penghapusan sudah masuk
+  // antrean retry; error diteruskan agar pengguna tahu sinkronisasinya tertunda.
+  await softDeleteDedicatedRecord('invoices',id)
+  saveLocal()
   return true
 }
 async function deleteCompetitionSafely(id){
@@ -1303,11 +1320,14 @@ async function deleteCompetitionSafely(id){
   // Nisan dicatat lebih dulu supaya penghapusan tetap tercatat (dan dicoba ulang)
   // walau panggilan Supabase gagal di tengah jalan.
   markTombstone('competitions',id)
-  await softDeleteDedicatedRecord('competitions',id)
   state.competitions.splice(index,1)
   addAudit('Hapus','competitions',id,record?.title||'')
   addVersionSnapshot('Hapus competitions')
   saveSafetySnapshot(state);render();queueSave()
+  // Bila Supabase menolak, nisan tetap pending dan penghapusan sudah masuk
+  // antrean retry; error diteruskan agar pengguna tahu sinkronisasinya tertunda.
+  await softDeleteDedicatedRecord('competitions',id)
+  saveLocal()
   return true
 }
 async function deleteDedicatedSafely(collection,id){

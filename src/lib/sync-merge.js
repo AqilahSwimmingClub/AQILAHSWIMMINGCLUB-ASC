@@ -192,3 +192,51 @@ export function resolveCollectionFromSources(collection, {
   // (tetap disaring nisan) supaya gangguan jaringan tidak menghapus data.
   return withoutTombstoned(collection, Array.isArray(deviceItems) ? deviceItems : [], tombstones) || []
 }
+
+// ---------------------------------------------------------------------------
+// Penulisan nisan ke sumber data.
+//
+// Alurnya murni dan menerima operasi penyimpanan sebagai parameter, sehingga
+// aturannya dapat diuji tanpa Supabase. Aturan utamanya satu: nisan HANYA boleh
+// ditandai tersinkron bila sumber data benar-benar menerima penghapusannya.
+// ---------------------------------------------------------------------------
+
+export class TombstoneWriteError extends Error {
+  constructor(collection, id, message) {
+    super(`Penghapusan belum tersinkron ke Supabase dan akan dicoba ulang. ${message}`)
+    this.name = 'TombstoneWriteError'
+    this.collection = collection
+    this.recordId = String(id)
+  }
+}
+
+export async function commitTombstone(collection, id, {
+  // async (deletedAt) => { rows: <jumlah baris yang ter-update>, error }
+  updateDeletedAt,
+  // async (deletedAt) => { error } — dipakai bila UPDATE tidak menemukan baris
+  insertTombstoneRow,
+  tombstones = {},
+  queueRetry = () => {},
+  deletedAt = new Date().toISOString()
+} = {}) {
+  const updated = await updateDeletedAt(deletedAt)
+  if (updated?.error) {
+    // Penghapusan tidak boleh hilang diam-diam: antrean retry dulu, baru gagal.
+    queueRetry(collection, id)
+    throw new TombstoneWriteError(collection, id, String(updated.error?.message || updated.error))
+  }
+  if (!Number(updated?.rows || 0)) {
+    // Record belum pernah punya baris di tabelnya (hanya hidup di payload
+    // legacy), jadi UPDATE mengenai nol baris. Baris nisan dibuat agar
+    // perangkat lain ikut melihatnya terhapus.
+    const inserted = await insertTombstoneRow(deletedAt)
+    if (inserted?.error) {
+      // Supabase belum mencatat penghapusan ini. Menandainya "tersinkron" akan
+      // menghentikan retry dan membiarkan record hidup kembali di perangkat lain.
+      queueRetry(collection, id)
+      throw new TombstoneWriteError(collection, id, String(inserted.error?.message || inserted.error))
+    }
+  }
+  markTombstoneSynced(tombstones, collection, id, deletedAt)
+  return true
+}

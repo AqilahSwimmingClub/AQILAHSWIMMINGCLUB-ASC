@@ -6,11 +6,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { chromium } from 'playwright'
+import { luncurkanChromium } from './bantu/browser.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CSS = readFileSync(join(ROOT, 'src/style.css'), 'utf8')
-const CHROME = process.env.ASC_CHROME_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
 
 // Ukuran nyata: HP kecil -> HP besar -> tablet portrait/landscape -> desktop.
 const UKURAN = [
@@ -75,7 +74,7 @@ const HALAMAN = `<!doctype html><html><head><meta charset="utf-8">
 </div></body></html>`
 
 let browser
-test.before(async () => { browser = await chromium.launch({ executablePath: CHROME }) })
+test.before(async () => { browser = await luncurkanChromium() })
 test.after(async () => { await browser?.close() })
 
 async function bukaHalaman(width, height) {

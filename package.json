@@ -14,8 +14,9 @@
     "android:setup": "npm run build && npx cap add android && node scripts/set-android-min-sdk.cjs && npx cap sync android",
     "android:update": "npm run build && node scripts/set-android-min-sdk.cjs && npx cap sync android",
     "test": "node --test \"tests/**/*.test.js\"",
-    "test:hapus": "node --test tests/penghapusan-permanen.test.js",
-    "test:tata-letak": "node --test tests/tata-letak.test.js"
+    "test:tata-letak": "node --test tests/tata-letak.test.js",
+    "test:unit": "node --test tests/penghapusan-permanen.test.js tests/nisan-sinkron.test.js tests/browser-portabel.test.js",
+    "test:e2e": "node --test tests/e2e-responsif.test.js"
   },
   "dependencies": {
     "@capacitor/core": "^7.4.3",

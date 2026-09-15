@@ -1771,3 +1771,31 @@ dialog{max-width:calc(100vw - 24px)}
   from{opacity:0}
   to{opacity:1}
 }
+
+/* =========================================================
+   V3.2 — PERBAIKAN DARI PENGUJIAN E2E LAYAR 320 px
+   Pada mode kartu (HP), tbody memakai display:grid tanpa kolom eksplisit,
+   sehingga lebar trek mengikuti min-content baris. Satu elemen white-space:nowrap
+   (mis. .cell-sub) membuat trek melebihi pembungkusnya, lalu isinya terpotong
+   oleh .content{overflow-x:hidden}. Kolom grid dikunci agar tidak pernah
+   melebihi lebar kartu, dan teks pendamping boleh turun baris.
+   ========================================================= */
+@media (max-width:767px){
+  table tbody{grid-template-columns:minmax(0,1fr)!important}
+  table tbody tr{min-width:0!important;max-width:100%!important;overflow-wrap:anywhere}
+  table td{min-width:0!important}
+  /* .cell-sub memakai white-space:nowrap untuk tampilan tabel desktop.
+     Di mode kartu, teks itu harus boleh turun baris agar tidak terpotong. */
+  table td .cell-sub,
+  table td small{white-space:normal!important;overflow-wrap:anywhere}
+  table td .action-stack,
+  table td .doc-links{min-width:0;max-width:100%}
+  table td .action-stack button,
+  table td .doc-links a{min-width:0;max-width:100%}
+}
+/* Layar paling sempit (mis. 320 px): kolom label dipersempit supaya kolom nilai
+   tetap punya ruang yang layak. */
+@media (max-width:360px){
+  table td{grid-template-columns:minmax(78px,34%) minmax(0,1fr)!important;gap:8px!important}
+  .status{white-space:normal;overflow-wrap:anywhere}
+}
