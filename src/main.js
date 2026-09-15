@@ -3,6 +3,14 @@ import { createClient } from '@supabase/supabase-js'
 import * as XLSX from 'xlsx-js-style'
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
+// Aturan penghapusan permanen dipusatkan di satu modul murni supaya dapat diuji.
+import {
+  recordIdentity, isTombstoned as isTombstonedIn, markTombstone as markTombstoneIn,
+  clearTombstone as clearTombstoneIn, mergeTombstoneMaps, withoutTombstoned, purgeTombstoned,
+  resurrectedIds, pendingTombstoneIds, commitTombstone, ensureRecordIds,
+  nextSequentialId, nextAvailableDeterministicId, isIdSafeForNewRecord,
+  mergeStateWithoutLoss as mergeStateWithoutLossPure, resolveCollectionFromSources
+} from './lib/sync-merge.js'
 
 // crypto.randomUUID() tidak selalu tersedia pada HTTP alamat IP lokal (mis. 192.168.x.x).
 // Gunakan generator UUID yang tetap bekerja di laptop, HP, localhost, dan jaringan Wi-Fi.
@@ -261,33 +269,42 @@ async function loadRowCollections(){
       return [key,[],error,null]
     }
   }))
+  // Nisan penghapusan milik perangkat lain ikut masuk lewat payload legacy.
+  // Tanpa langkah ini, HP B tidak pernah tahu HP A sudah menghapus sebuah record.
+  adoptTombstones(legacyPayload.__tombstones)
+  // Record bernisan yang ternyata masih hidup di Supabase berarti perintah
+  // hapusnya belum sampai. Perintah itu dikirim ulang, bukan dibiarkan.
+  const needsRepair=[]
   results.forEach(([key,items,error,totalCount])=>{
+    resurrectedIds(key,items,state.__tombstones).forEach(id=>needsRepair.push([key,id]))
     const fallback=key==='financeTransactions'?[]:(Array.isArray(legacyPayload[key])?legacyPayload[key]:[])
-    if(MIGRATED_LEGACY_COLLECTION_KEYS.has(key)&&!error){state[key]=typeof ROW_COLLECTIONS[key].applyItems==='function'?ROW_COLLECTIONS[key].applyItems(items):items;return}
+    if(MIGRATED_LEGACY_COLLECTION_KEYS.has(key)&&!error){
+      const safeItems=withoutTombstoned(key,items,state.__tombstones)
+      state[key]=typeof ROW_COLLECTIONS[key].applyItems==='function'?ROW_COLLECTIONS[key].applyItems(safeItems):safeItems
+      return
+    }
     if(key==='athletes'){
-      if(!error&&items.length)state.athletes=items
-      else if(fallback.length)state.athletes=structuredClone(fallback)
+      const safeItems=withoutTombstoned('athletes',items,state.__tombstones)
+      const safeFallback=withoutTombstoned('athletes',fallback,state.__tombstones)
+      if(!error&&safeItems.length)state.athletes=safeItems
+      else if(safeFallback.length)state.athletes=structuredClone(safeFallback)
       else if(legacyRowExists&&isBundledDefaultAthleteList(state.athletes))state.athletes=[]
+      else state.athletes=withoutTombstoned('athletes',state.athletes,state.__tombstones)
       // Bila kedua sumber kosong/gagal, pertahankan data perangkat. Jangan pernah
       // mengganti data atlet yang masih ada dengan array kosong.
       return
     }
-    if(['invoices','competitions','pendingRegistrations'].includes(key)){
-      const tombstones=state.__tombstones?.[key]||{}
-      const safeFallback=[...new Map(fallback.filter(item=>!tombstones[String(item?.id||'')]).map(item=>[String(item?.id||''),item])).values()].filter(item=>item?.id)
-      if(!error&&items.length)state[key]=items
-      else if(!error&&Number(totalCount)>0)state[key]=[]
-      else if(safeFallback.length)state[key]=structuredClone(safeFallback)
-      return
-    }
-    if(!error&&items.length)state[key]=items
-    else{
-      // Fallback legacy disaring nisan supaya tidak menghidupkan data terhapus.
-      const safeFallback=withoutTombstoned(key,fallback)
-      if(safeFallback.length)state[key]=structuredClone(safeFallback)
-    }
-    // Bila tabel dan fallback kosong, cache perangkat tidak pernah diganti [].
+    state[key]=structuredClone(resolveCollectionFromSources(key,{
+      remoteItems:items,
+      remoteError:error,
+      // Hanya koleksi dengan trueEmptyFallback yang tahu jumlah baris sebenarnya.
+      remoteTotalCount:ROW_COLLECTIONS[key].trueEmptyFallback?totalCount:null,
+      legacyFallback:fallback,
+      deviceItems:Array.isArray(state[key])?state[key]:[],
+      tombstones:state.__tombstones
+    }))
   })
+  if(needsRepair.length)repairPendingDeletions(needsRepair)
   normalize()
   const changed=before!==dedicatedCollectionsFingerprint()
   if(changed)saveLocal()
@@ -308,9 +325,16 @@ function applyRemotePayloadPreservingDedicated(payload){
     // dari tabelnya sendiri lewat loadRowCollections(), sehingga payload legacy
     // tidak boleh menimpa apa pun dan tidak boleh menghidupkan data terhapus.
     const localList=Array.isArray(previous?.[key])?previous[key]:null
-    if(localList&&localList.length){next[key]=structuredClone(localList);return}
+    if(localList&&localList.length){
+      // Nisan baru dari payload jarak jauh juga berlaku untuk data perangkat ini.
+      next[key]=structuredClone(withoutTombstoned(key,localList,next.__tombstones))
+      return
+    }
     if(Array.isArray(next[key]))next[key]=withoutTombstoned(key,next[key],next.__tombstones)
   })
+  // Koleksi non-dedicated pun disaring, supaya payload legacy tidak pernah
+  // menghidupkan kembali apa pun yang sudah dihapus di perangkat mana pun.
+  purgeTombstoned(next,next.__tombstones)
   if(stableSerialize(next)===stableSerialize(previous))return false
   state=next
   return true
@@ -318,24 +342,50 @@ function applyRemotePayloadPreservingDedicated(payload){
 async function saveRowCollections(snapshot){
   for(const key of BULK_ROW_COLLECTION_KEYS){
     const cfg=ROW_COLLECTIONS[key]
-    const rows=(Array.isArray(snapshot?.[key])?snapshot[key]:[]).map(cfg.toRow)
+    const graves=snapshot?.__tombstones?.[key]||{}
+    // Record bernisan tidak pernah ikut diunggah — upsert akan menulis
+    // deleted_at=null dan menghidupkannya kembali di seluruh perangkat.
+    const rows=(Array.isArray(snapshot?.[key])?snapshot[key]:[])
+      .filter(item=>!graves[String(item?.id||'')])
+      .map(cfg.toRow)
     for(let i=0;i<rows.length;i+=200){
       const chunk=rows.slice(i,i+200)
       if(!chunk.length)continue
       const {error}=await supabase.from(cfg.table).upsert(chunk,{onConflict:'legacy_id'})
       if(error)throw new Error(`${cfg.table}: ${error.message||error}`)
     }
-    const tombstones=Object.keys(snapshot?.__tombstones?.[key]||{})
-    for(let i=0;i<tombstones.length;i+=100){
-      const ids=tombstones.slice(i,i+100)
-      if(!ids.length)continue
-      const {error}=await supabase.from(cfg.table).update({deleted_at:new Date().toISOString(),updated_at:new Date().toISOString()}).in('legacy_id',ids)
-      if(error)throw new Error(`${cfg.table}: ${error.message||error}`)
+  }
+  // Nisan yang belum dikonfirmasi Supabase dikirim untuk SELURUH koleksi baris,
+  // bukan hanya koleksi bulk (yang saat ini kosong). Tanpa ini, penghapusan yang
+  // dilakukan saat offline tidak pernah sampai ke server.
+  await pushPendingTombstones(snapshot)
+}
+async function pushPendingTombstones(snapshot){
+  for(const key of ROW_COLLECTION_KEYS){
+    const ids=pendingTombstoneIds(key,snapshot?.__tombstones)
+    for(const id of ids){
+      try{await writeRemoteTombstone(key,id)}
+      catch(error){
+        queueOfflineDelete(key,id)
+        console.error(`Nisan ${key}:${id} belum tersinkron ke Supabase:`,error)
+      }
     }
   }
 }
+// Penjaga bersama seluruh penyimpanan per-record: sebuah upsert selalu menulis
+// deleted_at=null, jadi menyimpan ulang record bernisan sama dengan
+// menghidupkannya kembali. Penyimpanan seperti itu dibatalkan, bukan diteruskan.
+function refuseTombstonedWrite(collection,item){
+  const id=String(item?.id||'')
+  if(id&&isTombstoned(collection,id)){
+    console.warn(`${collection}:${id} sudah ditandai terhapus. Penyimpanan ulang dibatalkan.`)
+    return true
+  }
+  return false
+}
 async function upsertAthleteRecord(item){
   const cfg=ROW_COLLECTIONS.athletes
+  if(refuseTombstonedWrite('athletes',item))return
   markLocalRowWrite(cfg.table,item?.id)
   const {error}=await supabase.from(cfg.table).upsert(cfg.toRow(item),{onConflict:'legacy_id'})
   if(error){
@@ -343,18 +393,50 @@ async function upsertAthleteRecord(item){
     throw new Error(`asc_athletes: ${error.message||error}`)
   }
 }
+// Menandai satu record terhapus di Supabase secara permanen.
+// UPDATE saja tidak cukup: record yang hanya pernah hidup di payload legacy
+// belum punya baris di tabelnya, sehingga UPDATE mengenai 0 baris dan
+// penghapusan tidak pernah tercatat di server. Untuk kasus itu sebuah baris
+// nisan dibuat, sehingga perangkat lain ikut melihat record tersebut terhapus.
+// Isian minimal untuk baris nisan. Nilainya tidak pernah ditampilkan karena
+// baris ini selalu ber-deleted_at, tetapi harus lolos constraint NOT NULL/CHECK.
+function tombstonePlaceholder(id,deletedAt){
+  return {id:String(id),deletedAt,direction:'income',amount:0,status:'deleted',recipientRole:'admin'}
+}
+// Aturannya ada di commitTombstone() (src/lib/sync-merge.js) supaya dapat diuji:
+// nisan hanya ditandai tersinkron bila Supabase benar-benar menerimanya, dan
+// setiap kegagalan otomatis masuk antrean retry.
+async function writeRemoteTombstone(collection,id){
+  const cfg=ROW_COLLECTIONS[collection]
+  if(!cfg)throw new Error(`Konfigurasi tabel ${collection} tidak ditemukan.`)
+  markLocalRowWrite(cfg.table,id)
+  return commitTombstone(collection,id,{
+    tombstones:state.__tombstones,
+    queueRetry:queueOfflineDelete,
+    updateDeletedAt:async deletedAt=>{
+      const {data,error}=await supabase.from(cfg.table)
+        .update({deleted_at:deletedAt,updated_at:deletedAt})
+        .eq('legacy_id',String(id))
+        .select('legacy_id')
+      if(error)console.error(`Supabase ${cfg.table} gagal menandai satu record terhapus:`,error)
+      return {rows:Array.isArray(data)?data.length:0,error}
+    },
+    insertTombstoneRow:async deletedAt=>{
+      // Baris nisan dibentuk lewat toRow() milik tabelnya sendiri agar seluruh
+      // kolom wajib (mis. direction pada asc_finance_transactions) tetap terisi.
+      const row={...cfg.toRow(tombstonePlaceholder(id,deletedAt)),legacy_id:String(id),deleted_at:deletedAt,updated_at:deletedAt}
+      const {error}=await supabase.from(cfg.table).upsert(row,{onConflict:'legacy_id'})
+      if(error)console.error(`Supabase ${cfg.table} gagal menyimpan baris nisan:`,error)
+      return {error}
+    }
+  })
+}
 async function softDeleteAthleteRecord(id){
-  const deletedAt=new Date().toISOString()
-  markLocalRowWrite(ROW_COLLECTIONS.athletes.table,id)
-  const {error}=await supabase.from(ROW_COLLECTIONS.athletes.table)
-    .update({deleted_at:deletedAt,updated_at:deletedAt}).eq('legacy_id',String(id))
-  if(error){
-    console.error('Supabase asc_athletes gagal menandai satu record terhapus:',error)
-    throw new Error(`asc_athletes: ${error.message||error}`)
-  }
+  return writeRemoteTombstone('athletes',id)
 }
 async function upsertAttendanceRecord(item){
   const cfg=ROW_COLLECTIONS.attendance
+  if(refuseTombstonedWrite('attendance',item))return
   markLocalRowWrite(cfg.table,item?.id)
   const {error}=await supabase.from(cfg.table).upsert(cfg.toRow(item),{onConflict:'legacy_id'})
   if(error){
@@ -363,18 +445,12 @@ async function upsertAttendanceRecord(item){
   }
 }
 async function softDeleteAttendanceRecord(id){
-  const deletedAt=new Date().toISOString()
-  markLocalRowWrite(ROW_COLLECTIONS.attendance.table,id)
-  const {error}=await supabase.from(ROW_COLLECTIONS.attendance.table)
-    .update({deleted_at:deletedAt,updated_at:deletedAt}).eq('legacy_id',String(id))
-  if(error){
-    console.error('Supabase asc_attendance gagal menandai satu record terhapus:',error)
-    throw new Error(`asc_attendance: ${error.message||error}`)
-  }
+  return writeRemoteTombstone('attendance',id)
 }
 async function upsertDedicatedRecord(collection,item){
   const cfg=ROW_COLLECTIONS[collection]
   if(!cfg)throw new Error(`Konfigurasi tabel ${collection} tidak ditemukan.`)
+  if(refuseTombstonedWrite(collection,item))return
   markLocalRowWrite(cfg.table,item?.id)
   const {error}=await supabase.from(cfg.table).upsert(cfg.toRow(item),{onConflict:'legacy_id'})
   if(error){
@@ -384,6 +460,7 @@ async function upsertDedicatedRecord(collection,item){
 }
 async function upsertFinanceRecord(item){
   const cfg=ROW_COLLECTIONS.financeTransactions
+  if(refuseTombstonedWrite('financeTransactions',item))return item
   markLocalRowWrite(cfg.table,item?.id)
   const {data,error}=await supabase.from(cfg.table).upsert(cfg.toRow(item),{onConflict:'legacy_id'}).select(cfg.select).single()
   if(error){console.error('Supabase asc_finance_transactions gagal menyimpan transaksi:',error);throw new Error(`asc_finance_transactions: ${error.message||error}`)}
@@ -392,15 +469,20 @@ async function upsertFinanceRecord(item){
   return item
 }
 async function softDeleteDedicatedRecord(collection,id){
-  const cfg=ROW_COLLECTIONS[collection]
-  if(!cfg)throw new Error(`Konfigurasi tabel ${collection} tidak ditemukan.`)
-  const deletedAt=new Date().toISOString()
-  markLocalRowWrite(cfg.table,id)
-  const {error}=await supabase.from(cfg.table).update({deleted_at:deletedAt,updated_at:deletedAt}).eq('legacy_id',String(id))
-  if(error){
-    console.error(`Supabase ${cfg.table} gagal menandai satu record terhapus:`,error)
-    throw new Error(`${cfg.table}: ${error.message||error}`)
-  }
+  return writeRemoteTombstone(collection,id)
+}
+// Penghapusan yang belum sampai ke Supabase dikirim ulang di latar belakang.
+// Dipanggil ketika sebuah record bernisan ternyata masih hidup di server.
+function repairPendingDeletions(entries){
+  if(!navigator.onLine)return
+  entries.forEach(([collection,id])=>{
+    writeRemoteTombstone(collection,id)
+      .then(()=>saveLocal())
+      .catch(error=>{
+        queueOfflineDelete(collection,id)
+        console.error(`Penghapusan ${collection}:${id} belum dapat diulang:`,error)
+      })
+  })
 }
 const CLIENT_ID = localStorage.getItem('asc_client_id') || createId()
 trySetLocalStorage('asc_client_id', CLIENT_ID)
@@ -516,12 +598,17 @@ function calcGroup(birth) {
   if(y<=2010)return 'KU 1'; if(y<=2012)return 'KU 2'; if(y<=2014)return 'KU 3'; if(y<=2016)return 'KU 4'; if(y<=2018)return 'KU 5B'; return 'KU 5A'
 }
 function nextAthleteId() {
-  // Gunakan kembali nomor terkecil yang sedang kosong. Contoh: bila ASC-0012
-  // sudah dihapus, pendaftar berikutnya akan memperoleh ASC-0012.
-  const used=new Set((state.athletes||[]).map(a=>Number(String(a.id||'').replace(/\D/g,''))).filter(Number.isFinite))
-  let number=1
-  while(used.has(number)) number++
-  return `ASC-${String(number).padStart(4,'0')}`
+  // ID atlet TIDAK PERNAH dipakai ulang. Dulu nomor terkecil yang kosong dipakai
+  // kembali, sehingga atlet baru bisa memperoleh ID yang masih bernisan
+  // (mis. ASC-0012 yang baru dihapus). Record baru seperti itu ditolak
+  // refuseTombstonedWrite() atau ikut tersapu ketika perangkat lain
+  // menyinkronkan nisannya. Sekarang nomornya selalu naik dan seluruh nomor
+  // yang pernah bernisan ikut dilewati.
+  return nextSequentialId('athletes',{
+    prefix:'ASC',
+    existingIds:(state.athletes||[]).map(a=>a?.id),
+    tombstones:state.__tombstones
+  })
 }
 function normalize() {
   state.athletes=(state.athletes||[]).map((a,i)=>({
@@ -559,8 +646,29 @@ function normalize() {
   state.auditTrail ||= []
   state.versionHistory ||= []
   state.__tombstones ||= {}
-  purgeTombstonedRecords()
   state.timeRecords ||= []; state.trainingPrograms ||= []; state.attendance ||= []; state.schedules ||= []; state.payments ||= []; state.competitions ||= []; state.competitionRegistrations ||= []; state.announcements ||= []
+  migrateMissingRecordIds()
+  purgeTombstonedRecords()
+}
+// Record operasional lama dari payload legacy kadang belum punya `id`. Tanpa ID,
+// semuanya memakai kunci gabung yang sama dan saling menimpa. Di sini setiap
+// record seperti itu memperoleh ID stabil yang diturunkan dari isinya, sehingga
+// perangkat mana pun menghasilkan ID yang sama dan tidak ada duplikat.
+// ID lama yang sudah valid tidak pernah diubah.
+const ID_PREFIX_KOLEKSI={
+  attendance:'ATT',timeRecords:'TIM',trainingPrograms:'PRG',payments:'PAY',schedules:'SCH',
+  announcements:'ANN',athletes:'ASC',coaches:'PLT',pendingRegistrations:'REG',invoices:'INV',
+  competitions:'CMP',competitionRegistrations:'CRG',coachSalaries:'SAL',notifications:'NTF',
+  coachNotifications:'NTC',financeTransactions:'FIN',weeklyTargets:'WTG',skillJournals:'SKJ',
+  drylandTasks:'DRY',rescheduleRequests:'RSC',athletePackages:'PKG',auditTrail:'AUD',versionHistory:'VER'
+}
+function migrateMissingRecordIds(){
+  PERSISTENT_COLLECTIONS.forEach(key=>{
+    const list=state[key]
+    if(!Array.isArray(list)||!list.length)return
+    if(list.every(item=>!item||typeof item!=='object'||String(item.id||'')))return
+    state[key]=ensureRecordIds(list,{prefix:ID_PREFIX_KOLEKSI[key]||'REC'})
+  })
 }
 const MODULE_CACHE_KEYS={
   athletes:'asc_cache_athletes',attendance:'asc_cache_attendance',timeRecords:'asc_cache_time_records',
@@ -578,49 +686,59 @@ const COMPETITION_TOMBSTONE_CACHE_KEY='asc_cache_competition_tombstones'
 // yang disimpan, sehingga penghapusan menu lain hilang begitu halaman dimuat
 // ulang dan payload legacy class_app_data menghidupkannya kembali.
 const TOMBSTONE_CACHE_KEY='asc_cache_tombstones'
-function tombstonesFor(collection,source=state.__tombstones){
-  const graves=source?.[collection]
-  return graves&&typeof graves==='object'?graves:{}
-}
 function isTombstoned(collection,id,source=state.__tombstones){
-  return Boolean(tombstonesFor(collection,source)[String(id)])
+  return isTombstonedIn(collection,id,source)
 }
 function markTombstone(collection,id){
-  state.__tombstones ||= {}
-  state.__tombstones[collection] ||= {}
-  state.__tombstones[collection][String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  state.__tombstones=markTombstoneIn(state.__tombstones||{},collection,id,{clientId:CLIENT_ID,actor:currentActor()})
 }
+// Membatalkan nisan HANYA di perangkat ini berbahaya: baris di Supabase masih
+// ber-deleted_at, sehingga record akan hilang lagi pada sinkronisasi berikutnya.
+// Karena itu fungsi ini tidak dipakai langsung oleh alur pembuatan record.
+// Pemulihan yang sah harus lewat restoreDeletedRecord() di bawah.
 function clearTombstone(collection,id){
-  const graves=state.__tombstones?.[collection]
-  if(graves)delete graves[String(id)]
+  clearTombstoneIn(state.__tombstones,collection,id)
 }
-function mergeTombstoneMaps(...sources){
-  const merged={}
-  sources.forEach(source=>{
-    if(!source||typeof source!=='object')return
-    Object.entries(source).forEach(([collection,graves])=>{
-      if(!graves||typeof graves!=='object')return
-      merged[collection]={...(merged[collection]||{}),...graves}
-    })
-  })
-  return merged
-}
-function withoutTombstoned(collection,list,source=state.__tombstones){
-  const graves=tombstonesFor(collection,source)
-  if(!Array.isArray(list)||!Object.keys(graves).length)return list
-  return list.filter((item,index)=>!graves[String(item?.id||'')]&&!graves[recordIdentity(item,index)])
+// Pemulihan record yang sudah dihapus, secara eksplisit dan tersinkron ke server.
+// Urutannya sengaja: server dipulihkan LEBIH DULU, nisan lokal baru dibatalkan
+// setelah Supabase benar-benar menerimanya. Bila server menolak, nisan tetap ada
+// sehingga perangkat ini tidak pernah menampilkan data yang sebenarnya terhapus.
+async function restoreDeletedRecord(collection,id){
+  const cfg=ROW_COLLECTIONS[collection]
+  if(!cfg)throw new Error(`Konfigurasi tabel ${collection} tidak ditemukan.`)
+  if(!isTombstoned(collection,id))return false
+  if(!navigator.onLine)throw new Error('Pemulihan data memerlukan koneksi internet.')
+  const now=new Date().toISOString()
+  markLocalRowWrite(cfg.table,id)
+  const {data,error}=await supabase.from(cfg.table)
+    .update({deleted_at:null,updated_at:now}).eq('legacy_id',String(id)).select('legacy_id')
+  if(error){
+    console.error(`Supabase ${cfg.table} gagal memulihkan record:`,error)
+    throw new Error(`${cfg.table}: ${error.message||error}`)
+  }
+  if(!Array.isArray(data)||!data.length){
+    throw new Error(`Record ${collection}:${id} tidak ada di Supabase sehingga tidak dapat dipulihkan.`)
+  }
+  clearTombstone(collection,id)
+  // Antrean hapus offline dibersihkan agar tidak menghapusnya lagi nanti.
+  safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify(deleteOfflineQueue().filter(e=>e!==`${collection}:${id}`)))
+  addAudit('Pulihkan',collection,id,'Pemulihan eksplisit tersinkron ke Supabase')
+  queueSave()
+  return true
 }
 // Satu titik penyaring: data yang sudah dihapus tidak pernah boleh bertahan di
 // state, dari sumber mana pun (cache lokal, payload legacy, atau realtime).
 function purgeTombstonedRecords(){
-  const tombstones=state.__tombstones
-  if(!tombstones||typeof tombstones!=='object')return
-  Object.keys(tombstones).forEach(collection=>{
-    const list=state[collection]
-    if(!Array.isArray(list)||!list.length)return
-    const kept=withoutTombstoned(collection,list)
-    if(kept.length!==list.length)state[collection]=kept
-  })
+  purgeTombstoned(state,state.__tombstones)
+}
+// Nisan dari perangkat/payload lain digabungkan ke perangkat ini, lalu record
+// yang sudah dihapus di mana pun langsung dibuang dari state.
+function adoptTombstones(...sources){
+  const before=Object.values(state.__tombstones||{}).reduce((n,graves)=>n+Object.keys(graves||{}).length,0)
+  state.__tombstones=mergeTombstoneMaps(state.__tombstones,...sources)
+  const after=Object.values(state.__tombstones||{}).reduce((n,graves)=>n+Object.keys(graves||{}).length,0)
+  purgeTombstonedRecords()
+  return after!==before
 }
 function cacheSafeClone(value){
   if(Array.isArray(value))return value.map(cacheSafeClone)
@@ -708,39 +826,12 @@ const PERSISTENT_COLLECTIONS = [
   'trainingPrograms','attendance','schedules','payments','competitions',
   'competitionRegistrations','announcements','auditTrail','versionHistory'
 ]
-function recordIdentity(item,index=0){
-  if(item && typeof item==='object'){
-    return String(item.id || item.paymentId || item.registrationId || item.invoiceId ||
-      item.athleteId && item.date && `${item.athleteId}|${item.date}|${item.type||item.stroke||''}` ||
-      item.athleteId && item.month && `${item.athleteId}|${item.month}|${item.paymentType||''}` ||
-      item.coachId && item.period && `${item.coachId}|${item.period}` || '')
-  }
-  return `index-${index}-${JSON.stringify(item)}`
-}
-function mergeCollection(remoteList=[],localList=[],tombstones={}){
-  const merged=new Map()
-  ;(Array.isArray(remoteList)?remoteList:[]).forEach((item,index)=>{
-    const key=recordIdentity(item,index)
-    if(!tombstones[key])merged.set(key,structuredClone(item))
-  })
-  ;(Array.isArray(localList)?localList:[]).forEach((item,index)=>{
-    const key=recordIdentity(item,index)
-    if(tombstones[key])return
-    const old=merged.get(key)
-    merged.set(key,old && typeof old==='object' && typeof item==='object' ? {...old,...structuredClone(item)} : structuredClone(item))
-  })
-  return [...merged.values()]
-}
 function mergeStateWithoutLoss(remotePayload,localPayload){
-  const remote=remotePayload && typeof remotePayload==='object' ? remotePayload : {}
-  const local=localPayload && typeof localPayload==='object' ? localPayload : {}
-  const merged={...structuredClone(defaultState),...structuredClone(remote),...structuredClone(local)}
-  merged.__tombstones={...(remote.__tombstones||{}),...(local.__tombstones||{})}
-  PERSISTENT_COLLECTIONS.forEach(key=>{ merged[key]=mergeCollection(remote[key],local[key],merged.__tombstones[key]||{}) })
-  merged.settings={...(remote.settings||{}),...(local.settings||{})}
-  merged.parentReminders={...(remote.parentReminders||{}),...(local.parentReminders||{})}
-  merged.__sync={...(remote.__sync||{}),...(local.__sync||{}),clientId:CLIENT_ID,savedAt:new Date().toISOString()}
-  return merged
+  return mergeStateWithoutLossPure(remotePayload,localPayload,{
+    defaultState,
+    persistentCollections:PERSISTENT_COLLECTIONS,
+    clientId:CLIENT_ID
+  })
 }
 function currentActor(){
   if(role==='admin')return state.settings?.coachName||'Admin'
@@ -766,13 +857,18 @@ function softDelete(collection,id,detail=''){
   if(index<0)return false
   const record=state[collection][index]
   const identity=recordIdentity(record,index)
-  state.__tombstones ||= {}; state.__tombstones[collection] ||= {}
-  state.__tombstones[collection][identity]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  markTombstone(collection,identity)
   state[collection].splice(index,1)
   addAudit('Hapus',collection,identity,detail||record?.name||record?.title||record?.athleteName||'')
   addVersionSnapshot(`Hapus ${collection}`)
-  if(DEDICATED_COLLECTION_KEYS.has(collection))softDeleteDedicatedRecord(collection,identity).catch(error=>console.error(`Supabase ${collection} gagal soft-delete:`,error));else queueSave()
-  saveLocal();render();return true
+  // queueSave() dijalankan untuk SEMUA koleksi, bukan hanya koleksi legacy, agar
+  // nisan penghapusan ikut tersimpan di payload bersama dan terbaca perangkat lain.
+  if(DEDICATED_COLLECTION_KEYS.has(collection)){
+    if(navigator.onLine)softDeleteDedicatedRecord(collection,identity).then(()=>saveLocal()).catch(error=>{queueOfflineDelete(collection,identity);console.error(`Supabase ${collection} gagal soft-delete:`,error)})
+    else queueOfflineDelete(collection,identity)
+  }
+  queueSave()
+  render();return true
 }
 function downloadJsonFile(data,filename){
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'})
@@ -901,7 +997,13 @@ async function saveRemote() {
     // Data Atlet sekarang dimiliki asc_athletes. Pertahankan nilai legacy apa adanya
     // agar penyimpanan menu lain tidak menulis ulang atau menghapus fallback lama.
     DEDICATED_COLLECTION_KEYS.forEach(key=>{
-      if(Array.isArray(latestRow?.payload?.[key]))snapshot[key]=structuredClone(latestRow.payload[key])
+      if(Array.isArray(latestRow?.payload?.[key])){
+        // Salinan legacy dipertahankan apa adanya KECUALI record yang sudah
+        // bernisan. Dulu salinan beku ini ikut tersimpan utuh, sehingga
+        // pendaftar/event yang sudah dihapus terus hidup kembali setiap kali
+        // perangkat lain memuat ulang dan jatuh ke fallback legacy.
+        snapshot[key]=withoutTombstoned(key,structuredClone(latestRow.payload[key]),snapshot.__tombstones)
+      }
       else delete snapshot[key]
     })
     snapshot.__sync.revision=Math.max(
@@ -936,7 +1038,7 @@ async function saveRemote() {
     }
     // Jangan menandai selesai jika ada perubahan baru saat proses upload berlangsung.
     pendingRemoteSave = Number(state.__sync?.revision||0) > Number(data?.payload?.__sync?.revision||snapshotRevision)
-    syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':'HP dan website sudah tersinkron'
+    syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':syncedStatusText()
     if(pendingRemoteSave)scheduleRemoteRetry(150)
   } catch(error) {
     appendRecoveryJournal('remote-save-error',{message:error?.message||String(error),counts:criticalCounts(localSnapshot)})
@@ -979,7 +1081,7 @@ async function loadRemote({renderAfter=false,attempt=1}={}) {
     const rowsChanged=await loadRowCollections()
     changed=changed||rowsChanged
     if(renderAfter&&changed)renderRemoteUpdateSafely()
-    syncStatus=pendingRemoteSave?'Perubahan lokal menunggu sinkronisasi':'HP dan website sudah tersinkron'
+    syncStatus=pendingRemoteSave?'Perubahan lokal menunggu sinkronisasi':syncedStatusText()
   } catch(error) {
     const message=error?.message||error?.details||String(error||'Koneksi gagal')
     if(attempt<3 && navigator.onLine){
@@ -1022,7 +1124,7 @@ function subscribeRealtime() {
       const localRevision=Number(state.__sync?.revision||0)
       const fromThisDevice=remote.__sync?.clientId===CLIENT_ID
       if(fromThisDevice && remoteRevision<=localRevision){
-        syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':'HP dan website sudah tersinkron'
+        syncStatus=pendingRemoteSave?'Ada perubahan baru, menyinkronkan...':syncedStatusText()
         updateSync();return
       }
       // Jika perangkat ini sedang memiliki perubahan yang belum terkirim, jangan timpa.
@@ -1032,12 +1134,12 @@ function subscribeRealtime() {
         updateSync();scheduleRemoteRetry(100);return
       }
       if(remoteRevision===localRevision && remote.__sync?.clientId===state.__sync?.clientId){
-        syncStatus='HP dan website sudah tersinkron'
+        syncStatus=syncedStatusText()
         updateSync();return
       }
       const changed=applyRemotePayloadPreservingDedicated(remote)
       if(!changed){
-        syncStatus='HP dan website sudah tersinkron'
+        syncStatus=syncedStatusText()
         updateSync();return
       }
       normalize();saveLocal()
@@ -1091,6 +1193,22 @@ document.addEventListener('visibilitychange',()=>{
 window.addEventListener('pagehide',()=>{if(pendingRemoteSave&&navigator.onLine)saveRemote()})
 document.addEventListener('focusout',()=>setTimeout(finishDeferredRemoteRender,150),true)
 function updateSync() { const e=document.querySelector('#syncBadge');if(e)e.textContent=syncStatus }
+// Selama masih ada nisan yang belum dikonfirmasi Supabase (atau antrean hapus
+// offline belum kosong), aplikasi tidak boleh menyatakan dirinya tersinkron:
+// perangkat lain masih bisa menampilkan data yang sudah dihapus di sini.
+function hasPendingDeletions(){
+  if(deleteOfflineQueue().length)return true
+  return ROW_COLLECTION_KEYS.some(key=>pendingTombstoneIds(key,state.__tombstones).length>0)
+}
+// Satu tempat untuk menentukan kalimat "sudah tersinkron", supaya statusnya
+// tidak pernah lebih optimistis daripada keadaan sebenarnya.
+function syncedStatusText(){
+  return hasPendingDeletions()?'Penghapusan menunggu sinkronisasi':'HP dan website sudah tersinkron'
+}
+// Satu sumber kebenaran untuk "layar sempit". Nilainya harus sama persis dengan
+// @media (max-width:1100px) di style.css, supaya tombol menu, drawer, dan lebar
+// isi halaman tidak pernah berbeda pendapat di tablet ~1000-1100 px.
+const DRAWER_LAYOUT_QUERY='(max-width:1100px)'
 const STORAGE_BUCKET = 'asc-uploads'
 function safeFilePart(value='file'){
   return String(value).normalize('NFKD').replace(/[^a-zA-Z0-9._-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'file'
@@ -1210,56 +1328,64 @@ async function deleteAthleteSafely(id){
   const index=state.athletes.findIndex(item=>String(item?.id)===String(id))
   if(index<0)return false
   const record=state.athletes[index]
-  state.__tombstones ||= {};state.__tombstones.athletes ||= {}
-  state.__tombstones.athletes[String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  markTombstone('athletes',id)
   state.athletes.splice(index,1)
   addAudit('Hapus','athletes',id,record?.name||'')
   addVersionSnapshot('Hapus athletes')
-  stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
-  if(!navigator.onLine)return true
+  saveSafetySnapshot(state);render();queueSave()
+  if(!navigator.onLine){queueOfflineDelete('athletes',id);return true}
   await softDeleteAthleteRecord(id)
+  saveLocal()
   return true
 }
 async function deleteAttendanceSafely(id){
   const index=state.attendance.findIndex(item=>String(item?.id)===String(id))
   if(index<0)return false
   const record=state.attendance[index]
-  state.__tombstones ||= {};state.__tombstones.attendance ||= {}
-  state.__tombstones.attendance[String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  markTombstone('attendance',id)
   state.attendance.splice(index,1)
   addAudit('Hapus','attendance',id,`${record?.athleteName||record?.athleteId||''} ${record?.date||''}`.trim())
   addVersionSnapshot('Hapus attendance')
-  stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
-  if(!navigator.onLine)return true
+  saveSafetySnapshot(state);render();queueSave()
+  if(!navigator.onLine){queueOfflineDelete('attendance',id);return true}
   await softDeleteAttendanceRecord(id)
+  saveLocal()
   return true
 }
 async function deleteInvoiceSafely(id){
   const index=state.invoices.findIndex(item=>String(item?.id)===String(id))
   if(index<0)return false
   if(!navigator.onLine)throw new Error('Tagihan belum dihapus karena perangkat sedang offline. Sambungkan internet lalu coba kembali.')
-  await softDeleteDedicatedRecord('invoices',id)
   const record=state.invoices[index]
-  state.__tombstones ||= {};state.__tombstones.invoices ||= {}
-  state.__tombstones.invoices[String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  // Nisan dicatat lebih dulu supaya penghapusan tetap tercatat (dan dicoba ulang)
+  // walau panggilan Supabase gagal di tengah jalan.
+  markTombstone('invoices',id)
   state.invoices.splice(index,1)
   addAudit('Hapus','invoices',id,record?.title||record?.athleteName||'')
   addVersionSnapshot('Hapus invoices')
-  stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
+  saveSafetySnapshot(state);render();queueSave()
+  // Bila Supabase menolak, nisan tetap pending dan penghapusan sudah masuk
+  // antrean retry; error diteruskan agar pengguna tahu sinkronisasinya tertunda.
+  await softDeleteDedicatedRecord('invoices',id)
+  saveLocal()
   return true
 }
 async function deleteCompetitionSafely(id){
   const index=state.competitions.findIndex(item=>String(item?.id)===String(id))
   if(index<0)return false
   if(!navigator.onLine)throw new Error('Event belum dihapus karena perangkat sedang offline. Sambungkan internet lalu coba kembali.')
-  await softDeleteDedicatedRecord('competitions',id)
   const record=state.competitions[index]
-  state.__tombstones ||= {};state.__tombstones.competitions ||= {}
-  state.__tombstones.competitions[String(id)]={deletedAt:new Date().toISOString(),clientId:CLIENT_ID,actor:currentActor()}
+  // Nisan dicatat lebih dulu supaya penghapusan tetap tercatat (dan dicoba ulang)
+  // walau panggilan Supabase gagal di tengah jalan.
+  markTombstone('competitions',id)
   state.competitions.splice(index,1)
   addAudit('Hapus','competitions',id,record?.title||'')
   addVersionSnapshot('Hapus competitions')
-  stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
+  saveSafetySnapshot(state);render();queueSave()
+  // Bila Supabase menolak, nisan tetap pending dan penghapusan sudah masuk
+  // antrean retry; error diteruskan agar pengguna tahu sinkronisasinya tertunda.
+  await softDeleteDedicatedRecord('competitions',id)
+  saveLocal()
   return true
 }
 async function deleteDedicatedSafely(collection,id){
@@ -1276,9 +1402,10 @@ async function deleteDedicatedSafely(collection,id){
   list.splice(index,1)
   addAudit('Hapus',collection,id,record?.name||record?.title||record?.athleteName||'')
   addVersionSnapshot(`Hapus ${collection}`)
-  stampStateForSync();saveSafetySnapshot(state);saveLocal();render()
+  saveSafetySnapshot(state);render();queueSave()
   if(!navigator.onLine){queueOfflineDelete(collection,id);return true}
   await softDeleteDedicatedRecord(collection,id)
+  saveLocal()
   return true
 }
 function persistDedicatedSoon(collection,id){
@@ -1313,6 +1440,7 @@ async function flushDeleteOfflineQueue(){
     if(!ROW_COLLECTIONS[collection])continue
     try{await softDeleteDedicatedRecord(collection,id)}catch(error){remaining.push(entry);console.error(`Penghapusan ${entry} belum tersinkron:`,error)}
   }
+  saveLocal()
   safeLocalStorageSet(DELETE_OFFLINE_QUEUE_KEY,JSON.stringify(remaining))
 }
 const FINANCE_OFFLINE_QUEUE_KEY='asc_finance_offline_queue'
@@ -1326,7 +1454,12 @@ async function flushFinanceOfflineQueue(){
 }
 async function upsertFinanceReference({direction='income',referenceType,referenceId,amount=0,description='',category='',transactionType='',athleteId='',athleteName='',coachId='',coachName='',paymentId='',competitionId='',proofUrl='',transactionDate=new Date().toISOString()}){
   if(!referenceType||!referenceId)throw new Error('Referensi transaksi keuangan wajib tersedia.')
-  const id=financeRecordId(direction,referenceType,referenceId)
+  // ID transaksi keuangan bersifat deterministik dari referensinya, jadi membuat
+  // ulang referensi yang sama menghasilkan ID yang sama. Dulu nisannya dibatalkan
+  // SECARA LOKAL, padahal baris di Supabase masih ber-deleted_at: record itu akan
+  // hilang lagi begitu perangkat mana pun menyinkronkan nisannya. Sekarang
+  // transaksi baru memperoleh ID baru yang berbeda dan record lama tetap terhapus.
+  const id=nextAvailableDeterministicId('financeTransactions',financeRecordId(direction,referenceType,referenceId),state.__tombstones)
   const item={id,direction,referenceType,referenceId,amount:Number(amount||0),description,category:normalizeFinanceCategory(category),transactionType,athleteId,athleteName,coachId,coachName,paymentId,competitionId,proofUrl,transactionDate,createdBy:currentActor(),createdRole:role||'system',createdDevice:PUSH_DEVICE_ID,updatedAt:new Date().toISOString()}
   const index=state.financeTransactions.findIndex(x=>x.id===id||(x.referenceType===referenceType&&String(x.referenceId)===String(referenceId)&&x.direction===direction))
   if(index>=0)state.financeTransactions[index]={...state.financeTransactions[index],...item,id:state.financeTransactions[index].id||id}
@@ -1341,7 +1474,10 @@ async function deactivateFinanceReference(direction,referenceType,referenceId){
   if(item)await deleteDedicatedSafely('financeTransactions',item.id)
 }
 async function upsertTargetedNotification({recipientRole,recipientId,athleteId='',coachId='',title,message,type,referenceType,referenceId,page}){
-  const id=`NTF-${recipientRole}-${recipientId||'all'}-${type}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-')
+  const koleksiNotifikasi=recipientRole==='coach'?'coachNotifications':'notifications'
+  // Sama seperti transaksi keuangan: ID notifikasi deterministik, jadi
+  // notifikasi baru memakai ID baru bila ID dasarnya sudah bernisan.
+  const id=nextAvailableDeterministicId(koleksiNotifikasi,`NTF-${recipientRole}-${recipientId||'all'}-${type}-${referenceType}-${referenceId}`.replace(/[^A-Za-z0-9_-]/g,'-'),state.__tombstones)
   const list=recipientRole==='coach'?state.coachNotifications:state.notifications
   const index=list.findIndex(n=>n.id===id||(n.referenceType===referenceType&&String(n.referenceId)===String(referenceId)&&String(n.recipientId||n.coachId)===String(recipientId)&&n.type===type))
   const item={id,recipientRole,recipientId,athleteId:athleteId||(recipientRole==='parent'?recipientId:''),coachId:coachId||(recipientRole==='coach'?recipientId:''),title,message,type,referenceType,referenceId,page,deepLink:page,notificationAudience:recipientRole==='coach'?'coach':recipientRole,read:index>=0?Boolean(list[index].read):false,readAt:index>=0?list[index].readAt:null,createdAt:index>=0?list[index].createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}
@@ -1429,7 +1565,16 @@ function cleanupExpiredCompetitionPayments(now=new Date()){
   return {changed:registrations>0||payments>0,registrations,payments}
 }
 function invoiceStatusLabel(status){return status==='paid'?'Lunas':status==='cancelled'?'Dibatalkan':'Belum Dibayar'}
-function nextInvoiceId(){return `INV-${Date.now()}`}
+function nextInvoiceId(){
+  // Berbasis waktu sehingga selalu naik, tetapi tetap diperiksa terhadap nisan
+  // supaya dua tagihan pada milidetik yang sama tidak menabrak ID terhapus.
+  let id=`INV-${Date.now()}`
+  let ke=1
+  while(!isIdSafeForNewRecord('invoices',id,state.__tombstones)||state.invoices?.some(i=>String(i?.id)===id)){
+    id=`INV-${Date.now()}-${++ke}`
+  }
+  return id
+}
 
 const TRAINING_CATEGORIES=['Pemula','Junior','Prestasi']
 const TRAINING_GROUPS=['KU 5B','KU 5A','KU 4','KU 3','KU 2','KU 1']
@@ -1465,8 +1610,13 @@ function validAdminPassword(value){ return /^[A-Za-z0-9]{6}$/.test(String(value|
 function validCoachPassword(value){ return /^[A-Za-z0-9]{6}$/.test(String(value||'')) }
 function validParentPassword(value){ return /^[A-Za-z0-9]{6}$/.test(String(value||'')) }
 function nextCoachId(){
-  const max=(state.coaches||[]).reduce((n,c)=>Math.max(n,Number(String(c.id||'').replace(/\D/g,''))||0),0)
-  return `PLT-${String(max+1).padStart(4,'0')}`
+  // max+1 saja tidak aman: bila pelatih bernomor tertinggi dihapus, nomornya
+  // kembali menjadi "berikutnya" padahal ID itu sudah bernisan.
+  return nextSequentialId('coaches',{
+    prefix:'PLT',
+    existingIds:(state.coaches||[]).map(c=>c?.id),
+    tombstones:state.__tombstones
+  })
 }
 
 function loginPage() {
@@ -1563,7 +1713,11 @@ function loginPage() {
         paymentAccountName:'FAHMI DJAWAS',
         paymentAccountNumber:'1560020198356'
       }
-      clearTombstone('pendingRegistrations',registration.id)
+      // ID pendaftaran dibuat acak. Bila (sangat jarang) ID itu sudah bernisan,
+      // ambil ID lain. Nisan tidak pernah dibatalkan secara lokal.
+      if(!isIdSafeForNewRecord('pendingRegistrations',registration.id,state.__tombstones)){
+        registration.id=nextAvailableDeterministicId('pendingRegistrations',registration.id,state.__tombstones)
+      }
       state.pendingRegistrations.push(registration)
       addAdminNotification('registration','Pendaftar Atlet Baru',`${registration.name} mengirim formulir pendaftaran.`,'registrations')
       await commitCriticalRecord('pendingRegistrations',registration.id)
@@ -2212,7 +2366,7 @@ function downloadAthletesPdf(){
 function athleteTable(){
  const canManage=role==='admin'
  const rows=state.athletes.slice().sort((a,b)=>String(a.id).localeCompare(String(b.id)))
- return `<section class="card"><div class="card-head"><div><h3>Data Atlet</h3><small>${rows.length} atlet terdaftar — ID berikutnya: <b>${nextAthleteId()}</b> — nomor kosong otomatis dipakai kembali</small></div>${canManage?'<div class="athlete-export-actions"><button class="secondary small" id="downloadAthletesPdf">Download PDF</button><button class="secondary small" id="downloadAthletesExcel">Download Excel</button><button class="primary small" id="addAthlete">+ Tambah Atlet</button></div>':''}</div>
+ return `<section class="card"><div class="card-head"><div><h3>Data Atlet</h3><small>${rows.length} atlet terdaftar — ID berikutnya: <b>${nextAthleteId()}</b> — nomor tidak pernah dipakai ulang</small></div>${canManage?'<div class="athlete-export-actions"><button class="secondary small" id="downloadAthletesPdf">Download PDF</button><button class="secondary small" id="downloadAthletesExcel">Download Excel</button><button class="primary small" id="addAthlete">+ Tambah Atlet</button></div>':''}</div>
  <div class="athlete-filter-row"><input id="athleteSearch" placeholder="Cari ID atau nama atlet"><select id="athleteKuFilter"><option value="">Semua KU</option>${['KU 1','KU 2','KU 3','KU 4','KU 5A','KU 5B'].map(x=>`<option>${x}</option>`).join('')}</select></div>
  <div class="table-wrap"><table id="athleteDataTable"><thead><tr><th>Foto</th><th>ID Atlet</th><th>Nama Atlet</th><th>JK</th><th>Tempat, Tanggal Lahir</th><th>Umur</th><th>KU</th><th>Kategori</th><th>Sekolah</th><th>Nomor Telepon</th>${canManage?'<th>Aksi</th>':''}</tr></thead><tbody>
  ${rows.map(a=>`<tr data-athlete-row data-name="${esc((a.id+' '+a.name+' '+(a.schoolName||'')).toLowerCase())}" data-ku="${esc(a.ageGroup||calcGroup(a.birth))}"><td>${a.photo?`<img class="table-avatar" src="${a.photo}" alt="Foto ${esc(a.name)}">`:'<span class="table-avatar placeholder">♟</span>'}</td><td><b>${esc(a.id)}</b></td><td>${esc(a.name)}</td><td>${esc(a.gender||'-')}</td><td>${esc([a.birthPlace,a.birth].filter(Boolean).join(', ')||'-')}</td><td>${Number.isFinite(a.age)?a.age:calcAge(a.birth)} tahun</td><td>${esc(a.ageGroup||calcGroup(a.birth))}</td><td>${esc(a.trainingCategory||'Pemula')}</td><td>${esc(a.schoolName||'-')}</td><td>${esc(a.parentPhone||a.parentWhatsapp||'-')}</td>${canManage?`<td class="action-cell"><button class="secondary tiny" data-view-athlete="${esc(a.id)}">Detail</button><button class="primary tiny" data-edit-athlete="${esc(a.id)}">Edit</button><button class="warning tiny" data-reset-parent-password="${esc(a.id)}">Reset Akun</button><button class="danger tiny" data-delete-athlete="${esc(a.id)}">Hapus</button></td>`:''}</tr>`).join('')}
@@ -2553,7 +2707,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
    box.innerHTML=isPdf?`<iframe src="${value}" title="Bukti Pembayaran"></iframe>`:`<img src="${value}" alt="Bukti Pembayaran">`;link.href=value;dialog.showModal()
  })
 
- document.querySelector('#logoutBtn')?.addEventListener('click',async()=>{if(unsubscribeRealtime){supabase.removeChannel(unsubscribeRealtime);unsubscribeRealtime=null}await clearCurrentPushDevice();clearActiveSession();role='';parentAthleteId='';coachId='';currentPage='dashboard';syncStatus='Siap';document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open');render()});const sidebar=document.querySelector('.sidebar');const sidebarBackdrop=document.querySelector('.sidebar-backdrop');const closeMobileSidebar=()=>{sidebar?.classList.remove('show');sidebarBackdrop?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')};const openMobileSidebar=()=>{sidebar?.classList.add('show');sidebarBackdrop?.classList.add('show');document.body.classList.add('mobile-menu-open');document.documentElement.classList.add('mobile-menu-open')};const toggleMobileSidebar=()=>sidebar?.classList.contains('show')?closeMobileSidebar():openMobileSidebar();document.querySelector('#menuBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});document.querySelector('#moreNavBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});sidebarBackdrop?.addEventListener('click',closeMobileSidebar);if(!window.__ascResizeHandlerBound){window.__ascResizeHandlerBound=true;window.addEventListener('resize',()=>{const mobileLayout=window.matchMedia('(max-width:767px), (min-width:768px) and (max-width:1100px) and (orientation:portrait), (orientation:landscape) and (max-width:1100px) and (max-height:650px)').matches;if(!mobileLayout){document.querySelector('.sidebar')?.classList.remove('show');document.querySelector('.sidebar-backdrop')?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')}})}document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{const d=b.closest('dialog');d?.close();setTimeout(finishDeferredRemoteRender,0)});document.querySelectorAll('dialog').forEach(d=>d.addEventListener('close',()=>setTimeout(finishDeferredRemoteRender,0)))
+ document.querySelector('#logoutBtn')?.addEventListener('click',async()=>{if(unsubscribeRealtime){supabase.removeChannel(unsubscribeRealtime);unsubscribeRealtime=null}await clearCurrentPushDevice();clearActiveSession();role='';parentAthleteId='';coachId='';currentPage='dashboard';syncStatus='Siap';document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open');render()});const sidebar=document.querySelector('.sidebar');const sidebarBackdrop=document.querySelector('.sidebar-backdrop');const closeMobileSidebar=()=>{sidebar?.classList.remove('show');sidebarBackdrop?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')};const openMobileSidebar=()=>{sidebar?.classList.add('show');sidebarBackdrop?.classList.add('show');document.body.classList.add('mobile-menu-open');document.documentElement.classList.add('mobile-menu-open')};const toggleMobileSidebar=()=>sidebar?.classList.contains('show')?closeMobileSidebar():openMobileSidebar();document.querySelector('#menuBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});document.querySelector('#moreNavBtn')?.addEventListener('click',(event)=>{event.preventDefault();event.stopPropagation();toggleMobileSidebar()});sidebarBackdrop?.addEventListener('click',closeMobileSidebar);if(!window.__ascResizeHandlerBound){window.__ascResizeHandlerBound=true;window.addEventListener('resize',()=>{const mobileLayout=window.matchMedia(DRAWER_LAYOUT_QUERY).matches;if(!mobileLayout){document.querySelector('.sidebar')?.classList.remove('show');document.querySelector('.sidebar-backdrop')?.classList.remove('show');document.body.classList.remove('mobile-menu-open');document.documentElement.classList.remove('mobile-menu-open')}})}document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{const d=b.closest('dialog');d?.close();setTimeout(finishDeferredRemoteRender,0)});document.querySelectorAll('dialog').forEach(d=>d.addEventListener('close',()=>setTimeout(finishDeferredRemoteRender,0)))
  document.querySelector('#parentProfileForm')?.addEventListener('submit',async e=>{
    e.preventDefault();if(role!=='parent')return
    const athlete=parentAthlete(),form=e.currentTarget,f=new FormData(form),error=document.querySelector('#parentProfileError')

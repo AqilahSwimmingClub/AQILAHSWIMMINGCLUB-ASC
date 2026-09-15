@@ -16,3 +16,10 @@ android/app/release/
 android/icon-launcher.before-hybrid.zip
 src/*.before-*.js
 src/*.stage2-backup
+bukti-responsif/
+
+# Keluaran APK dan berkas identitas build tidak pernah masuk git.
+*.apk
+*.aab
+keluaran-apk/
+identitas-apk.txt
