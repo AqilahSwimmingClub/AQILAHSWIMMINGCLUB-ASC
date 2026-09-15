@@ -45,6 +45,27 @@ function uraiSkemaTandaTangan(keluaran) {
   return { v1: baca('v1'), v2: baca('v2'), v3: baca('v3'), v4: baca('v4') }
 }
 
+// Subjek (DN) sertifikat penandatangan, mis. "CN=Android Debug, O=Android, C=US".
+function uraiSubjekSertifikat(keluaran) {
+  const hasil = []
+  String(keluaran || '').split(/\r?\n/).forEach(baris => {
+    const cocok = baris.match(/certificate\s+DN:\s*(.+)$/i)
+    if (cocok) hasil.push(cocok[1].trim())
+  })
+  return hasil
+}
+
+// Kenali apakah sebuah APK ditandatangani keystore debug bawaan Android.
+// Keystore debug selalu memakai subjek "CN=Android Debug". APK seperti itu
+// TIDAK PERNAH bisa memperbarui aplikasi yang dipasang dari APK rilis, dan
+// sebaliknya, sehingga jenis kunci perlu dilaporkan secara eksplisit.
+function jenisKunci(subjek) {
+  const teks = String(subjek || '')
+  if (!teks) return 'tidak diketahui'
+  if (/CN\s*=\s*Android Debug/i.test(teks)) return 'debug'
+  return 'rilis'
+}
+
 // Keluaran `aapt2 dump badging` untuk identitas dasar.
 function uraiBadging(keluaran) {
   const teks = String(keluaran || '')
@@ -209,8 +230,11 @@ function bacaSertifikat(apk) {
   }
   const r = jalankan(apksigner, ['verify', '--verbose', '--print-certs', apk])
   const sidikJari = uraiSidikJariSertifikat(r.keluaran)
+  const subjek = uraiSubjekSertifikat(r.keluaran)
   return {
     tersedia: true,
+    subjek: subjek[0] || '',
+    jenisKunci: jenisKunci(subjek[0] || ''),
     // apksigner memberi kode keluar bukan nol bila APK tidak bertanda tangan
     // atau tanda tangannya tidak sah.
     sah: r.kode === 0,
@@ -223,6 +247,8 @@ function bacaSertifikat(apk) {
 
 module.exports = {
   uraiSidikJariSertifikat,
+  uraiSubjekSertifikat,
+  jenisKunci,
   normalkanSidikJari,
   sidikJariValid,
   uraiSkemaTandaTangan,

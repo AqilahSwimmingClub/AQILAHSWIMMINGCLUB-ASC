@@ -43,12 +43,25 @@ keyPassword=...
   langsung dari Android Studio memakai build debug. Kata sandinya baku:
   store `android`, alias `androiddebugkey`, key `android`.
 
-### 2. Taruh APK lama sebagai pembanding
+### 2. Taruh APK lama sebagai pembanding, lalu baca sidik jarinya
 
 Salin APK yang dipakai memasang aplikasi di HP ke folder `APK-LAMA/`.
 Skrip akan membandingkan sertifikat APK baru dengan APK itu. Tanpa berkas ini
 APK tetap dibuat, tetapi **tidak akan disebut APK pembaruan** karena kesamaan
 tanda tangan belum terbukti.
+
+Lalu klik dua kali **`BACA-SIDIK-JARI-APK-LAMA.bat`**. Berkas itu hanya membaca,
+tidak mengubah apa pun, dan menampilkan:
+
+- `applicationId`, `versionCode`, `versionName`, `minSdk`, `targetSdk`
+- subjek sertifikat dan **jenis kuncinya: debug atau rilis**
+- sidik jari SHA-256 sertifikat
+
+Jenis kunci itulah yang memberi tahu keystore mana yang harus dicari. Bila
+hasilnya **debug**, keystore-nya ada di `%USERPROFILE%\.android\debug.keystore`
+dengan kata sandi baku (store `android`, alias `androiddebugkey`, key
+`android`). Bila hasilnya **rilis**, yang dicari adalah berkas `.jks` atau
+`.keystore` dengan subjek yang sama.
 
 ### 3. Jalankan satu berkas
 
@@ -92,6 +105,7 @@ bila secret berikut tersedia:
 | `ANDROID_KEY_ALIAS` | alias kunci |
 | `ANDROID_KEY_PASSWORD` | kata sandi kunci |
 | `ASC_CERT_SHA256_LAMA` | sidik jari SHA-256 sertifikat APK lama |
+| `ASC_VERSION_CODE_LAMA` | `versionCode` APK lama (opsional, agar kenaikan versi ikut diperiksa) |
 
 Membuat base64 keystore di Windows:
 
@@ -99,10 +113,11 @@ Membuat base64 keystore di Windows:
 certutil -encode android\asc-release.jks keystore.b64
 ```
 
-Membaca sidik jari sertifikat APK lama:
+Membaca sidik jari sertifikat APK lama — klik `BACA-SIDIK-JARI-APK-LAMA.bat`,
+atau lewat perintah:
 
 ```
-apksigner verify --print-certs APK-LAMA\<apk lama>.apk
+node scripts\baca-apk-lama.cjs
 ```
 
 Sidik jari sertifikat **bukan rahasia** — nilainya tercetak di setiap APK.

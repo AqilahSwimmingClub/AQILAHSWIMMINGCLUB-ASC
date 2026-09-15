@@ -162,3 +162,26 @@ test('beberapa masalah sekaligus dilaporkan semuanya', () => {
   )
   assert.equal(masalah.length, 5)
 })
+
+// Jenis kunci menentukan apakah sebuah APK dapat memperbarui aplikasi yang
+// terpasang. APK debug dan APK rilis tidak akan pernah saling menimpa.
+test('subjek sertifikat dibaca dari keluaran apksigner', () => {
+  const keluaran = [
+    'Signer #1 certificate DN: CN=Android Debug, O=Android, C=US',
+    'Signer #1 certificate SHA-256 digest: ' + SIDIK_ASC
+  ].join('\n')
+  assert.deepEqual(alat.uraiSubjekSertifikat(keluaran), ['CN=Android Debug, O=Android, C=US'])
+})
+
+test('keystore debug bawaan Android dikenali sebagai kunci debug', () => {
+  assert.equal(alat.jenisKunci('CN=Android Debug, O=Android, C=US'), 'debug')
+  assert.equal(alat.jenisKunci('cn=android debug, o=Android'), 'debug')
+})
+
+test('kunci selain debug dilaporkan sebagai kunci rilis', () => {
+  assert.equal(alat.jenisKunci('CN=Aqilah Swimming Club, O=ASC, C=ID'), 'rilis')
+})
+
+test('subjek kosong tidak ditebak jenisnya', () => {
+  assert.equal(alat.jenisKunci(''), 'tidak diketahui')
+})
