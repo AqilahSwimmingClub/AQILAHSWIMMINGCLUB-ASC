@@ -52,17 +52,18 @@ if not exist "android\keystore.properties" (
   echo   yang SAMA dengan APK yang sekarang terpasang di HP, APK baru akan
   echo   ditolak Android dan pengguna terpaksa uninstall - data hilang.
   echo.
-  echo   Cari berkas keystore lama Anda ^(biasanya berakhiran .jks atau .keystore^):
-  echo     - folder android\ di dalam proyek ini, mis. android\asc-release.jks
-  echo     - cadangan proyek lama, flashdisk, Google Drive, atau email
-  echo     - %%USERPROFILE%%\.android\debug.keystore  ^(bila APK lama dipasang
-  echo       langsung dari Android Studio memakai build debug^)
+  echo   Cari keystore ASC ^(asc-release.p12^):
+  echo     - folder android\ di dalam proyek ini: android\asc-release.p12
+  echo     - cadangan yang Anda simpan di flashdisk, Google Drive, atau email
   echo.
-  echo   Setelah ketemu, salin android\keystore.properties.contoh menjadi
-  echo   android\keystore.properties lalu isi storeFile, storePassword,
-  echo   keyAlias, dan keyPassword sesuai keystore tersebut.
+  echo   Setelah ketemu, salin berkas itu ke folder android\, lalu salin
+  echo   android\keystore.properties.contoh menjadi android\keystore.properties
+  echo   dan isi storePassword serta keyPassword sesuai keystore tersebut.
   echo.
-  echo   Skrip ini sengaja TIDAK membuat keystore baru.
+  echo   Skrip ini sengaja TIDAK membuat keystore baru: keystore lain berarti
+  echo   identitas aplikasi berganti dan pengguna terpaksa uninstall lagi.
+  echo   Kalau keystore ASC benar-benar belum pernah ada di komputer ini,
+  echo   jalankan BUAT-KEYSTORE-BARU.bat lebih dulu.
   goto :selesai
 )
 
@@ -159,13 +160,16 @@ rem --- 9. Verifikasi --------------------------------------------------------
 echo.
 echo [9/10] Memverifikasi APK...
 if defined APKLAMA (
-  call node scripts\verifikasi-apk.cjs --apk "!APKBARU!" --apk-lama "!APKLAMA!"
+  call node scripts\verifikasi-apk.cjs --apk "!APKBARU!" --apk-lama "!APKLAMA!" --version-code-minimal 4
 ) else (
-  call node scripts\verifikasi-apk.cjs --apk "!APKBARU!"
+  call node scripts\verifikasi-apk.cjs --apk "!APKBARU!" --version-code-minimal 4
 )
-set "KODEVERIF=%errorlevel%"
-if "!KODEVERIF!"=="1" (
-  call :salah "APK TIDAK memenuhi syarat sebagai pembaruan. Jangan dibagikan."
+set "KODEVERIF=!errorlevel!"
+rem Hanya 0 dan 2 yang boleh lolos. 0 = terbukti dapat memperbarui;
+rem 2 = APK sah tetapi tidak ada APK lama sebagai pembanding. Kode lain
+rem apa pun berarti APK benar-benar tidak memenuhi syarat.
+if not "!KODEVERIF!"=="0" if not "!KODEVERIF!"=="2" (
+  call :salah "APK TIDAK memenuhi syarat (kode !KODEVERIF!). Jangan dibagikan."
   goto :selesai
 )
 

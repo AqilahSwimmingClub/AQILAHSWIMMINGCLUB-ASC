@@ -12,6 +12,21 @@
 //   node scripts/verifikasi-apk.cjs --apk <baru.apk> [--apk-lama <lama.apk>]
 //                                   [--sidik-jari <sha256>] [--version-code-lama <n>]
 //                                   [--target-sdk-minimal 35] [--json <berkas>]
+//                                   [--version-code-minimal <n>]
+//                                   [--mode pembaruan|instalasi_baru]
+//
+// Mode:
+//   pembaruan     (bawaan) APK harus terbukti dapat menimpa aplikasi terpasang:
+//                 butuh acuan sertifikat DAN versionCode APK lama.
+//   instalasi_baru  rilis pertama dengan identitas signing baru. Pengguna
+//                 memasang dari nol, jadi versionCode APK lama tidak ada dan
+//                 tidak diperlukan. Sertifikat tetap WAJIB cocok dengan
+//                 keystore yang dipakai sekarang.
+//
+// Kode keluar:
+//   0  memenuhi seluruh syarat modenya
+//   2  APK sah, tetapi acuan yang dibutuhkan tidak tersedia
+//   1  tidak memenuhi syarat
 'use strict'
 const { existsSync, statSync, writeFileSync } = require('node:fs')
 const { createHash } = require('node:crypto')
@@ -127,17 +142,30 @@ function main() {
   }
 
   // --- Penilaian ----------------------------------------------------------
+  const mode = arg.mode === 'instalasi_baru' ? 'instalasi_baru' : 'pembaruan'
+
+  // Pada instalasi_baru tidak ada APK lama, jadi kenaikan versionCode tidak
+  // dapat dibandingkan; yang berlaku adalah batas bawah versionCode.
   const masalah = alat.periksaKesesuaian(
     { ...identitas, sidikJari: sertifikat.sidikJari },
-    { ...HARAPAN, targetSdkMinimal: arg['target-sdk-minimal'] || HARAPAN.targetSdkMinimal, sidikJari: sidikJariAcuan, versionCodeLebihDari: versionCodeLama }
+    {
+      ...HARAPAN,
+      targetSdkMinimal: arg['target-sdk-minimal'] || HARAPAN.targetSdkMinimal,
+      sidikJari: sidikJariAcuan,
+      versionCodeLebihDari: mode === 'instalasi_baru' ? '' : versionCodeLama,
+      versionCodeMinimal: arg['version-code-minimal'] || ''
+    }
   )
 
-  const bisaUpdate = Boolean(sidikJariAcuan) && Boolean(versionCodeLama) && masalah.length === 0
+  const bisaUpdate = mode === 'instalasi_baru'
+    ? Boolean(sidikJariAcuan) && masalah.length === 0
+    : Boolean(sidikJariAcuan) && Boolean(versionCodeLama) && masalah.length === 0
 
   if (arg.json) {
     writeFileSync(arg.json, JSON.stringify({
       apk: apkBaru, ukuran, sha256: berkasSha, identitas,
       sertifikat: { sah: sertifikat.sah, sidikJari: sertifikat.sidikJari, skema: sertifikat.skema },
+      mode,
       acuan: { sumber: sumberAcuan, sidikJari: sidikJariAcuan, versionCodeLama },
       masalah, bisaUpdate
     }, null, 2))
@@ -161,6 +189,21 @@ function main() {
     process.exit(2)
   }
   console.log(`  [OK] Sertifikat identik dengan ${sumberAcuan}.`)
+
+  if (mode === 'instalasi_baru') {
+    console.log(`  [OK] versionCode ${identitas.versionCode} memenuhi batas minimal.`)
+    console.log('\n============================================================')
+    console.log(' APK RILIS INSTALASI BARU')
+    console.log(' Identitas signing berbeda dari aplikasi yang terpasang, jadi')
+    console.log(' aplikasi lama HARUS di-uninstall lebih dulu oleh pengguna dan')
+    console.log(' data lokalnya dapat ikut terhapus.')
+    console.log(' Setelah APK ini terpasang, seluruh pembaruan berikutnya cukup')
+    console.log(' dipasang menimpa - tanpa uninstall - selama keystore yang sama')
+    console.log(' terus dipakai.')
+    console.log('============================================================\n')
+    process.exit(bisaUpdate ? 0 : 2)
+  }
+
   if (!versionCodeLama) {
     console.log('\n  [PERHATIAN] versionCode APK lama tidak diketahui, kenaikan versi belum dibuktikan.')
     process.exit(2)

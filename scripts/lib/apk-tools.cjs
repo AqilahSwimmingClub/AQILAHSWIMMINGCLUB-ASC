@@ -114,6 +114,16 @@ function periksaKesesuaian(aktual, diharapkan) {
       masalah.push(`versionCode tidak naik: APK baru '${aktual.versionCode}', APK lama '${diharapkan.versionCodeLebihDari}'. Android menolak memasang versi yang tidak lebih tinggi.`)
     }
   }
+  // Batas bawah mutlak versionCode. Dipakai pada rilis instalasi_baru, yang
+  // tidak punya APK lama sebagai pembanding tetapi tetap harus memenuhi angka
+  // minimum supaya pembaruan berikutnya selalu bisa naik.
+  if (diharapkan.versionCodeMinimal !== undefined && diharapkan.versionCodeMinimal !== '') {
+    const baru = Number(aktual.versionCode)
+    const minimal = Number(diharapkan.versionCodeMinimal)
+    if (!Number.isFinite(baru) || !Number.isFinite(minimal) || baru < minimal) {
+      masalah.push(`versionCode terlalu rendah: '${aktual.versionCode}' (minimal '${diharapkan.versionCodeMinimal}')`)
+    }
+  }
   if (diharapkan.sidikJari) {
     const a = normalkanSidikJari(aktual.sidikJari)
     const b = normalkanSidikJari(diharapkan.sidikJari)

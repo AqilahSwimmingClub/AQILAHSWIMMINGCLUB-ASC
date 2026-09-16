@@ -9,6 +9,8 @@ android/local.properties
 android/keystore.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
 android/.gradle/
 android/.idea/
 android/**/build/

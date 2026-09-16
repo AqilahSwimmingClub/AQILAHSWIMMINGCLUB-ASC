@@ -22,8 +22,15 @@ on:
       - claude/relaxed-meitner-rx6lgd
   workflow_dispatch:
     inputs:
+      jenis_rilis:
+        description: 'instalasi_baru = identitas signing baru, pengguna uninstall dulu. pembaruan = menimpa aplikasi terpasang.'
+        type: choice
+        options:
+          - instalasi_baru
+          - pembaruan
+        default: pembaruan
       buat_release:
-        description: 'Buat GitHub Release untuk APK release yang terverifikasi'
+        description: 'Buat GitHub Release (hanya berlaku pada workflow_dispatch di main)'
         type: boolean
         default: true
 
@@ -35,11 +42,13 @@ permissions:
   contents: write
 
 env:
-  # Sidik jari SHA-256 sertifikat APK lama. Sidik jari sertifikat bukan rahasia:
-  # nilainya tercetak di setiap APK. Bila secret ASC_CERT_SHA256_LAMA diisi,
-  # APK release wajib memakai sertifikat itu; bila kosong, kesamaan tanda tangan
-  # tidak dapat dibuktikan dan APK tidak akan disebut APK pembaruan.
+  # Sidik jari SHA-256 sertifikat keystore yang dipakai SEKARANG, dari secret
+  # ASC_CERT_SHA256_CURRENT. Sidik jari sertifikat bukan rahasia: nilainya
+  # tercetak di setiap APK. Bila kosong, kesamaan tanda tangan tidak dapat
+  # dibuktikan dan APK tidak akan dijadikan GitHub Release.
   TARGET_SDK_MINIMAL: '35'
+  # Batas bawah versionCode untuk rilis dengan identitas signing baru.
+  VERSION_CODE_MINIMAL: '4'
 
 jobs:
   uji-dan-bangun:
@@ -179,9 +188,10 @@ jobs:
             echo "Hanya APK debug yang tersedia, dan APK debug tidak dapat memperbarui aplikasi terpasang."
             exit 0
           fi
-          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > android/asc-release.jks
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > android/asc-release.p12
           {
-            echo "storeFile=asc-release.jks"
+            echo "storeFile=asc-release.p12"
+            echo "storeType=PKCS12"
             echo "storePassword=${KEYSTORE_PASSWORD}"
             echo "keyAlias=${KEY_ALIAS}"
             echo "keyPassword=${KEY_PASSWORD}"
@@ -200,13 +210,18 @@ jobs:
         id: verifikasi_release
         if: steps.signing.outputs.tersedia == 'true'
         env:
-          CERT_LAMA: ${{ secrets.ASC_CERT_SHA256_LAMA }}
+          CERT_CURRENT: ${{ secrets.ASC_CERT_SHA256_CURRENT }}
           VERSION_CODE_LAMA: ${{ secrets.ASC_VERSION_CODE_LAMA }}
+          JENIS_RILIS: ${{ inputs.jenis_rilis || 'pembaruan' }}
         run: |
           set -euo pipefail
           APK=android/app/build/outputs/apk/release/app-release.apk
-          ARG=(--apk "${APK}" --target-sdk-minimal "${TARGET_SDK_MINIMAL}" --json verifikasi-release.json)
-          if [ -n "${CERT_LAMA}" ]; then ARG+=(--sidik-jari "${CERT_LAMA}"); fi
+          ARG=(--apk "${APK}"
+               --target-sdk-minimal "${TARGET_SDK_MINIMAL}"
+               --version-code-minimal "${VERSION_CODE_MINIMAL}"
+               --mode "${JENIS_RILIS}"
+               --json verifikasi-release.json)
+          if [ -n "${CERT_CURRENT}" ]; then ARG+=(--sidik-jari "${CERT_CURRENT}"); fi
           if [ -n "${VERSION_CODE_LAMA}" ]; then ARG+=(--version-code-lama "${VERSION_CODE_LAMA}"); fi
 
           set +e
@@ -214,17 +229,23 @@ jobs:
           KODE=$?
           set -e
 
-          # 0 = terbukti dapat memperbarui; 2 = APK sah tetapi acuan APK lama
-          # tidak tersedia; selain itu = benar-benar gagal.
-          if [ "${KODE}" -eq 0 ]; then
-            echo "terverifikasi=true" >> "$GITHUB_OUTPUT"
-          elif [ "${KODE}" -eq 2 ]; then
-            echo "terverifikasi=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::APK release sah, tetapi kesamaan sertifikat dengan APK lama belum dapat dibuktikan karena secret ASC_CERT_SHA256_LAMA belum diisi. APK ini belum boleh disebut APK pembaruan."
-          else
-            echo "::error::APK release tidak memenuhi syarat sebagai pembaruan."
-            exit 1
-          fi
+          # Kode keluar diperlakukan eksplisit. Pemeriksaan lama memakai
+          # `-gt 2`, sehingga kode 1 - yang justru berarti APK GAGAL memenuhi
+          # syarat - ikut lolos tanpa suara. Sekarang hanya 0 dan 2 yang
+          # dikenali; kode lain apa pun menggagalkan workflow.
+          case "${KODE}" in
+            0)
+              echo "terverifikasi=true" >> "$GITHUB_OUTPUT"
+              ;;
+            2)
+              echo "terverifikasi=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::APK release sah, tetapi acuan sertifikat tidak tersedia (secret ASC_CERT_SHA256_CURRENT kosong). APK ini tidak akan dijadikan GitHub Release."
+              ;;
+            *)
+              echo "::error::APK release TIDAK memenuhi syarat (kode keluar ${KODE}). Workflow dihentikan."
+              exit 1
+              ;;
+          esac
 
       - name: Verifikasi tanda tangan dengan apksigner
         if: steps.signing.outputs.tersedia == 'true'
@@ -263,13 +284,28 @@ jobs:
       - name: Periksa identitas APK debug
         run: |
           set -euo pipefail
+          set +e
           node scripts/verifikasi-apk.cjs \
             --apk "keluaran-apk/${{ steps.kumpulkan.outputs.nama_apk_debug }}" \
-            --target-sdk-minimal "${TARGET_SDK_MINIMAL}" || KODE=$?
-          # Kode 2 wajar untuk APK debug: identitasnya benar, tetapi memang tidak
-          # punya acuan APK lama dan memang bukan APK pembaruan.
-          if [ "${KODE:-0}" -gt 2 ]; then exit 1; fi
-          echo "Identitas APK debug sesuai (applicationId, minSdk 29, targetSdk)."
+            --target-sdk-minimal "${TARGET_SDK_MINIMAL}" \
+            --version-code-minimal "${VERSION_CODE_MINIMAL}"
+          KODE=$?
+          set -e
+
+          # Kode 2 wajar HANYA untuk APK debug: identitasnya benar, tetapi tidak
+          # punya acuan sertifikat dan memang bukan APK pembaruan. Kode 1
+          # berarti APK debug benar-benar salah - applicationId, minSdk,
+          # targetSdk, atau versionCode - dan itu wajib menggagalkan workflow.
+          # Pemeriksaan lama `-gt 2` meloloskan kode 1 tanpa suara.
+          case "${KODE}" in
+            0|2)
+              echo "Identitas APK debug sesuai (applicationId, minSdk 29, targetSdk, versionCode)."
+              ;;
+            *)
+              echo "::error::APK debug tidak memenuhi syarat identitas (kode keluar ${KODE})."
+              exit 1
+              ;;
+          esac
 
       - name: Unggah APK debug (bukan APK pembaruan)
         uses: actions/upload-artifact@v4
@@ -293,29 +329,42 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      # Artifact hilang setelah masa simpannya habis, jadi APK release yang sudah
-      # terbukti sebagai pembaruan disimpan permanen sebagai GitHub Release.
+      # GitHub Release hanya dibuat lewat workflow_dispatch di main, dengan
+      # buat_release dicentang, dan hanya untuk APK yang LOLOS verifikasi.
+      # Push otomatis maupun branch kerja tidak pernah menghasilkan Release.
+      - name: Susun catatan rilis
+        id: catatan
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.buat_release &&
+          steps.verifikasi_release.outputs.terverifikasi == 'true'
+        env:
+          JENIS_RILIS: ${{ inputs.jenis_rilis }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'isi<<CATATAN_RILIS_AKHIR'
+            node scripts/catatan-rilis.cjs \
+              --mode "${JENIS_RILIS}" \
+              --version-name "${{ steps.versi.outputs.version_name }}" \
+              --version-code "${{ steps.versi.outputs.version_code }}" \
+              --commit "${GITHUB_SHA}"
+            echo ''
+            echo 'CATATAN_RILIS_AKHIR'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Buat GitHub Release untuk APK yang terverifikasi
-        if: steps.verifikasi_release.outputs.terverifikasi == 'true' && (github.event_name != 'workflow_dispatch' || inputs.buat_release)
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          inputs.buat_release &&
+          steps.verifikasi_release.outputs.terverifikasi == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
           name: ASC ${{ steps.versi.outputs.version_name }} (versionCode ${{ steps.versi.outputs.version_code }})
-          body: |
-            APK pembaruan AQILAH Swimming Club.
-
-            Sertifikat penandatangan terbukti sama dengan APK lama, dan versionCode
-            lebih tinggi. Pasang langsung menimpa aplikasi yang sudah ada di HP.
-            **Jangan uninstall** — data aplikasi, sesi login, dan cache dipertahankan.
-
-            - applicationId: `com.aqilahswimmingclub.app`
-            - versionName: `${{ steps.versi.outputs.version_name }}`
-            - versionCode: `${{ steps.versi.outputs.version_code }}`
-            - minSdk: `29` (Android 10 ke atas)
-            - targetSdk: `35`
-            - Commit: `${{ github.sha }}`
-
-            SHA-256 setiap berkas ada di `SHA256SUMS.txt`.
+          body: ${{ steps.catatan.outputs.isi }}
           files: |
             keluaran-apk/*release*.apk
             keluaran-apk/SHA256SUMS.txt
@@ -324,7 +373,7 @@ jobs:
 
       - name: Hapus berkas rahasia dari runner
         if: always()
-        run: rm -f android/asc-release.jks android/keystore.properties
+        run: rm -f android/asc-release.p12 android/asc-release.jks android/keystore.properties
 
       - name: Ringkasan
         if: always()
@@ -348,7 +397,7 @@ jobs:
               echo "Tambahkan secret berikut agar APK pembaruan dapat dibuat:"
               echo "\`ANDROID_KEYSTORE_BASE64\`, \`ANDROID_KEYSTORE_PASSWORD\`,"
               echo "\`ANDROID_KEY_ALIAS\`, \`ANDROID_KEY_PASSWORD\`, dan"
-              echo "\`ASC_CERT_SHA256_LAMA\` (sidik jari sertifikat APK lama)."
+              echo "\`ASC_CERT_SHA256_CURRENT\` (sidik jari sertifikat keystore ASC)."
             elif [ "${{ steps.verifikasi_release.outputs.terverifikasi }}" = "true" ]; then
               echo "### APK release: TERVERIFIKASI sebagai APK pembaruan"
               echo ""
@@ -357,7 +406,7 @@ jobs:
             else
               echo "### APK release: dibangun, tetapi BELUM terbukti sebagai pembaruan"
               echo ""
-              echo "Secret \`ASC_CERT_SHA256_LAMA\` belum diisi, sehingga kesamaan"
+              echo "Secret \`ASC_CERT_SHA256_CURRENT\` belum diisi, sehingga kesamaan"
               echo "sertifikat dengan APK lama tidak dapat dibuktikan."
             fi
             echo ""

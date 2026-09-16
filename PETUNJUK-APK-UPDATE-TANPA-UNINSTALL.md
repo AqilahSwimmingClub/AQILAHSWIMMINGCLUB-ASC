@@ -1,133 +1,141 @@
-# APK Pembaruan, Bukan Uninstall
+# APK ASC: identitas signing baru, lalu pembaruan tanpa uninstall
 
 ## Aturan yang menentukan segalanya
 
-Android memakai **tanda tangan APK sebagai identitas aplikasi**. APK baru hanya
-bisa dipasang menimpa aplikasi yang sudah ada bila memenuhi tiga syarat:
+Android memakai **tanda tangan APK sebagai identitas aplikasi**. APK hanya bisa
+dipasang menimpa aplikasi yang sudah ada bila memenuhi tiga syarat:
 
 1. `applicationId` sama: `com.aqilahswimmingclub.app`
-2. **Ditandatangani kunci yang sama persis** dengan APK yang terpasang sekarang
+2. **Ditandatangani kunci yang sama persis** dengan APK yang terpasang
 3. `versionCode` lebih tinggi daripada yang terpasang
 
 Kalau kuncinya berbeda, Android menolak dengan
-`INSTALL_FAILED_UPDATE_INCOMPATIBLE` ("App not installed"), dan satu-satunya
-jalan adalah uninstall — yang **menghapus seluruh data aplikasi**.
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` ("App not installed").
 
-Karena itu proyek ini tidak pernah lagi membuat keystore baru secara otomatis.
+## Status saat ini: satu kali uninstall, lalu tidak pernah lagi
 
-## Cara membuat APK pembaruan
+APK ASC yang lama ditandatangani lewat wizard Android Studio dengan keystore
+yang berganti-ganti, dan keystore itu tidak tersimpan di mana pun. Karena itu
+dibuat **satu identitas signing baru yang dipakai permanen**:
 
-### 1. Siapkan keystore lama
+| | |
+|---|---|
+| Berkas | `asc-release.p12` |
+| Format | PKCS12 |
+| Alias | `asc-release` |
+| Algoritma | RSA 4096, SHA256withRSA |
+| Masa berlaku | 10.950 hari (sampai 2056) |
+| Subjek | `CN=AQILAH Swimming Club, O=AQILAH Swimming Club, C=ID` |
 
-`android/keystore.properties` harus menunjuk ke keystore yang dipakai membuat
-APK yang sekarang terpasang di HP. Berkas itu tidak ikut masuk git karena
-berisi kata sandi.
+Konsekuensinya, **sekali ini saja**:
 
-Salin `android/keystore.properties.contoh` menjadi `android/keystore.properties`
-lalu isi:
+- aplikasi ASC lama harus di-uninstall manual lebih dulu;
+- data lokal aplikasi lama dapat ikut terhapus (cache, sesi login, dan data
+  yang belum sempat tersinkron ke Supabase);
+- data yang sudah tersinkron tetap aman dan muncul kembali setelah login.
 
-```
-storeFile=asc-release.jks
-storePassword=...
-keyAlias=asc
-keyPassword=...
-```
+**Setelah APK baru terpasang, seluruh pembaruan berikutnya dipasang langsung
+menimpa — tanpa uninstall dan tanpa kehilangan data** — selama keystore yang
+sama terus dipakai.
 
-`storeFile` ditulis relatif terhadap folder `android/`.
+## Keystore: satu-satunya hal yang tidak boleh hilang
 
-**Di mana mencari keystore lama:**
+Keystore adalah identitas aplikasi **selamanya**. Simpan cadangan
+`asc-release.p12` di minimal dua tempat terpisah. Kalau hilang, tidak ada cara
+membuat APK pembaruan lagi dan semua pengguna harus uninstall sekali lagi.
 
-- folder `android/` di proyek ini, mis. `android/asc-release.jks`
-- cadangan proyek lama, flashdisk, Google Drive, atau email
-- `%USERPROFILE%\.android\debug.keystore` — bila APK lama dulu dipasang
-  langsung dari Android Studio memakai build debug. Kata sandinya baku:
-  store `android`, alias `androiddebugkey`, key `android`.
+**Jangan pernah** memasukkan keystore, kata sandi, alias, atau token ke git,
+log, atau GitHub Release. `.gitignore` sudah memblokir `*.p12`, `*.jks`,
+`*.keystore`, dan `android/keystore.properties`.
 
-### 2. Taruh APK lama sebagai pembanding, lalu baca sidik jarinya
+Keystore ini **tidak boleh dibuat ulang atau diganti** pada pembaruan
+berikutnya.
 
-Salin APK yang dipakai memasang aplikasi di HP ke folder `APK-LAMA/`.
-Skrip akan membandingkan sertifikat APK baru dengan APK itu. Tanpa berkas ini
-APK tetap dibuat, tetapi **tidak akan disebut APK pembaruan** karena kesamaan
-tanda tangan belum terbukti.
+## Merilis lewat GitHub Actions
 
-Lalu klik dua kali **`BACA-SIDIK-JARI-APK-LAMA.bat`**. Berkas itu hanya membaca,
-tidak mengubah apa pun, dan menampilkan:
+### 1. Isi GitHub Secrets
 
-- `applicationId`, `versionCode`, `versionName`, `minSdk`, `targetSdk`
-- subjek sertifikat dan **jenis kuncinya: debug atau rilis**
-- sidik jari SHA-256 sertifikat
-
-Jenis kunci itulah yang memberi tahu keystore mana yang harus dicari. Bila
-hasilnya **debug**, keystore-nya ada di `%USERPROFILE%\.android\debug.keystore`
-dengan kata sandi baku (store `android`, alias `androiddebugkey`, key
-`android`). Bila hasilnya **rilis**, yang dicari adalah berkas `.jks` atau
-`.keystore` dengan subjek yang sama.
-
-### 3. Jalankan satu berkas
-
-Klik dua kali **`BUAT-APK-UPDATE.bat`**. Sekali jalan skrip itu:
-
-1. memeriksa Node, Git, dan Android SDK
-2. memastikan keystore lama ada — berhenti bila tidak ada
-3. mengambil kode terbaru dari `main`
-4. menjalankan seluruh pengujian
-5. menaikkan `versionCode`
-6. `npm run build` dan `npx cap sync android`
-7. `gradlew assembleRelease`
-8. memverifikasi APK: applicationId, tanda tangan, `versionCode`, `minSdk`
-9. membandingkan sertifikat dengan APK lama
-
-Hasilnya ada di `HASIL-APK-UPDATE/` beserta berkas `.sha256`.
-
-### 4. Pasang di HP
-
-Salin APK ke HP, buka, pilih Pasang. **Jangan uninstall aplikasi lama.**
-Data aplikasi, sesi login, dan cache tetap dipertahankan.
-
-## Memeriksa APK secara terpisah
-
-```
-node scripts/verifikasi-apk.cjs --apk <baru.apk> --apk-lama <lama.apk>
-```
-
-Kode keluar: `0` terbukti dapat memperbarui, `2` sah tetapi acuan APK lama tidak
-ada, `1` tidak memenuhi syarat.
-
-## Lewat GitHub Actions
-
-Workflow `.github/workflows/build-apk.yml` membuat APK release bertanda tangan
-bila secret berikut tersedia:
+Buka **Settings → Secrets and variables → Actions → New repository secret**,
+lalu buat lima secret berikut:
 
 | Secret | Isi |
 |---|---|
-| `ANDROID_KEYSTORE_BASE64` | keystore `.jks` dalam base64 |
+| `ANDROID_KEYSTORE_BASE64` | seluruh isi berkas base64 keystore, satu baris |
 | `ANDROID_KEYSTORE_PASSWORD` | kata sandi keystore |
-| `ANDROID_KEY_ALIAS` | alias kunci |
+| `ANDROID_KEY_ALIAS` | `asc-release` |
 | `ANDROID_KEY_PASSWORD` | kata sandi kunci |
-| `ASC_CERT_SHA256_LAMA` | sidik jari SHA-256 sertifikat APK lama |
-| `ASC_VERSION_CODE_LAMA` | `versionCode` APK lama (opsional, agar kenaikan versi ikut diperiksa) |
+| `ASC_CERT_SHA256_CURRENT` | sidik jari SHA-256 sertifikat keystore |
 
-Membuat base64 keystore di Windows:
-
-```
-certutil -encode android\asc-release.jks keystore.b64
-```
-
-Membaca sidik jari sertifikat APK lama — klik `BACA-SIDIK-JARI-APK-LAMA.bat`,
-atau lewat perintah:
+Membuat base64 keystore sendiri di Windows:
 
 ```
-node scripts\baca-apk-lama.cjs
+certutil -encode android\asc-release.p12 keystore.b64
+```
+
+Buang baris `-----BEGIN/END CERTIFICATE-----` dan gabungkan sisanya menjadi
+satu baris.
+
+Membaca sidik jari sertifikat keystore:
+
+```
+keytool -list -v -keystore android\asc-release.p12 -storetype PKCS12
 ```
 
 Sidik jari sertifikat **bukan rahasia** — nilainya tercetak di setiap APK.
 
-APK release yang sudah terbukti sebagai pembaruan otomatis dijadikan GitHub
-Release, supaya tidak ikut hilang ketika artifact kedaluwarsa.
+### 2. Jalankan workflow
+
+**Actions → Uji dan Bangun APK → Run workflow**, pada branch `main`:
+
+- `jenis_rilis` = `instalasi_baru` untuk rilis pertama dengan kunci baru
+- `jenis_rilis` = `pembaruan` untuk seluruh rilis sesudahnya
+- `buat_release` = dicentang
+
+GitHub Release hanya dibuat bila **semua** syarat ini terpenuhi: event
+`workflow_dispatch`, branch `main`, `buat_release` dicentang, seluruh tes
+hijau, secret penandatanganan lengkap, sidik jari APK cocok dengan
+`ASC_CERT_SHA256_CURRENT`, versionCode memenuhi batas, dan APK lolos
+`apksigner`. Push biasa dan branch kerja tidak pernah menghasilkan Release.
 
 **APK debug dari workflow bukan APK pembaruan.** Artifact-nya dinamai
-`DEBUG-UJI-SAJA` karena ditandatangani kunci debug dan tidak dapat menimpa
-aplikasi yang terpasang.
+`DEBUG-UJI-SAJA` karena ditandatangani kunci debug.
+
+## Merilis dari komputer Windows
+
+### Kalau keystore belum ada di komputer ini
+
+Klik dua kali **`BUAT-KEYSTORE-BARU.bat`**. Skrip meminta kata sandi,
+membuat `android\asc-release.p12` sesuai spesifikasi di atas, menulis
+`android\keystore.properties`, dan menampilkan sidik jari sertifikatnya.
+Skrip **menolak menimpa** keystore yang sudah ada.
+
+Jangan jalankan berkas ini kalau keystore ASC sudah ada — keystore lain
+berarti identitas aplikasi berganti lagi dan semua pengguna harus uninstall.
+
+### Membuat APK
+
+1. Salin `asc-release.p12` ke folder `android\`.
+2. Salin `android\keystore.properties.contoh` menjadi
+   `android\keystore.properties`, isi `storePassword` dan `keyPassword`.
+3. Klik dua kali **`BUAT-APK-UPDATE.bat`**.
+
+Sekali jalan skrip itu mengambil kode terbaru dari `main`, menjalankan seluruh
+pengujian, membangun web, `npx cap sync android`, `gradlew assembleRelease`,
+lalu memverifikasi APK: applicationId, tanda tangan, `versionCode`, dan
+`minSdk`. Kalau ada APK lama di folder `APK-LAMA/`, sertifikatnya dibandingkan.
+Hasil ada di `HASIL-APK-UPDATE/` beserta berkas `.sha256`.
+
+### Memeriksa APK secara terpisah
+
+```
+node scripts/verifikasi-apk.cjs --apk <baru.apk> [--apk-lama <lama.apk>]
+                                [--mode instalasi_baru|pembaruan]
+```
+
+Kode keluar: `0` memenuhi syarat, `2` sah tetapi acuan tidak tersedia,
+`1` tidak memenuhi syarat.
+
+Membaca identitas APK lama: klik `BACA-SIDIK-JARI-APK-LAMA.bat`.
 
 ## Dukungan Android
 
@@ -149,9 +157,3 @@ begitu Vercel selesai deploy — cukup tutup paksa aplikasi lalu buka lagi.
 
 APK baru hanya perlu dibuat untuk perubahan native: ikon, nama aplikasi, izin,
 konfigurasi Firebase, atau `minSdk`.
-
-## Peringatan
-
-Keystore adalah identitas aplikasi **selamanya**. Simpan cadangannya di tempat
-aman. Kalau hilang, tidak ada cara membuat APK pembaruan lagi — semua pengguna
-harus uninstall dan kehilangan datanya.
