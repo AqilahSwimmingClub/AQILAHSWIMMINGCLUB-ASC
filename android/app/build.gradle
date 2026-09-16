@@ -12,6 +12,16 @@ def hasReleaseKeystore = keystorePropertiesFile.exists()
 def keystoreProperties = new Properties()
 if (hasReleaseKeystore) {
     keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+    // Salah ketik nama berkas keystore lebih berbahaya daripada kelihatannya:
+    // build tetap jalan, APK keluar tanpa tanda tangan yang benar, dan
+    // kegagalannya baru terasa di HP pengguna. Jadi diperiksa di sini.
+    def berkasKeystore = rootProject.file(keystoreProperties['storeFile'] ?: '')
+    if (!keystoreProperties['storeFile'] || !berkasKeystore.exists()) {
+        throw new GradleException(
+            "android/keystore.properties menunjuk keystore yang tidak ada: " +
+            "${keystoreProperties['storeFile']}. Perbaiki storeFile, atau salin " +
+            "keystore asc-release.p12 ke folder android/.")
+    }
 }
 
 android {
@@ -32,6 +42,12 @@ android {
         release {
             if (hasReleaseKeystore) {
                 storeFile rootProject.file(keystoreProperties['storeFile'])
+                // storeType menentukan format keystore. Keystore ASC memakai
+                // PKCS12; JKS lama tetap didukung bila nilainya diisi 'JKS'.
+                // Tanpa nilai, Gradle memakai format bawaan JDK (PKCS12).
+                if (keystoreProperties['storeType']) {
+                    storeType keystoreProperties['storeType']
+                }
                 storePassword keystoreProperties['storePassword']
                 keyAlias keystoreProperties['keyAlias']
                 keyPassword keystoreProperties['keyPassword']

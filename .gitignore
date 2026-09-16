@@ -9,6 +9,8 @@ android/local.properties
 android/keystore.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
 android/.gradle/
 android/.idea/
 android/**/build/
@@ -23,3 +25,7 @@ bukti-responsif/
 *.aab
 keluaran-apk/
 identitas-apk.txt
+
+# Keluaran APK pembaruan dan salinan APK lama tidak pernah masuk git.
+HASIL-APK-UPDATE/
+APK-LAMA/*.apk
