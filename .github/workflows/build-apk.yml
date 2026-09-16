@@ -180,15 +180,81 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          CERT_CURRENT: ${{ secrets.ASC_CERT_SHA256_CURRENT }}
         run: |
           set -euo pipefail
-          if [ -z "${KEYSTORE_BASE64}" ] || [ -z "${KEYSTORE_PASSWORD}" ] || [ -z "${KEY_ALIAS}" ] || [ -z "${KEY_PASSWORD}" ]; then
+
+          # Laporkan secret mana yang kosong. Yang dicetak hanya NAMA-nya,
+          # tidak pernah nilainya. Tanpa ini pesan "belum lengkap" tidak
+          # memberi tahu apa pun tentang secret mana yang perlu diperbaiki.
+          KURANG=""
+          for NAMA in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!NAMA:-}" ]; then KURANG="${KURANG} ${NAMA}"; fi
+          done
+
+          echo "--- Ketersediaan secret penandatanganan ---"
+          echo "ANDROID_KEYSTORE_BASE64   : $([ -n "${KEYSTORE_BASE64:-}" ] && echo 'terisi' || echo 'KOSONG')"
+          echo "ANDROID_KEYSTORE_PASSWORD : $([ -n "${KEYSTORE_PASSWORD:-}" ] && echo 'terisi' || echo 'KOSONG')"
+          echo "ANDROID_KEY_ALIAS         : $([ -n "${KEY_ALIAS:-}" ] && echo 'terisi' || echo 'KOSONG')"
+          echo "ANDROID_KEY_PASSWORD      : $([ -n "${KEY_PASSWORD:-}" ] && echo 'terisi' || echo 'KOSONG')"
+          echo "ASC_CERT_SHA256_CURRENT   : $([ -n "${CERT_CURRENT:-}" ] && echo 'terisi' || echo 'KOSONG')"
+          echo "-------------------------------------------"
+
+          if [ -n "${KURANG}" ]; then
             echo "tersedia=false" >> "$GITHUB_OUTPUT"
-            echo "Secret penandatanganan belum lengkap. APK release TIDAK dibangun."
-            echo "Hanya APK debug yang tersedia, dan APK debug tidak dapat memperbarui aplikasi terpasang."
+            echo "::error::Secret penandatanganan yang KOSONG:${KURANG}"
+            echo ""
+            echo "Periksa hal berikut:"
+            echo "  1. Secret dibuat di Settings > Secrets and variables > ACTIONS,"
+            echo "     pada tab 'Repository secrets' - bukan tab Dependabot, dan"
+            echo "     bukan 'Environment secrets'."
+            echo "  2. Nama secret ditulis persis, huruf besar semua, tanpa spasi."
+            echo "  3. Bila secret dibuat di tingkat organisasi, repository ini"
+            echo "     harus diberi akses pada pengaturan secret tersebut."
+            echo ""
+            echo "APK release TIDAK dibangun. APK debug tidak dapat memperbarui aplikasi terpasang."
             exit 0
           fi
-          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > android/asc-release.p12
+
+          # certutil -encode dan beberapa alat lain membungkus base64 dengan
+          # baris -----BEGIN/END----- dan memecahnya per 64 karakter. Semua itu
+          # dibersihkan supaya salin-tempel apa adanya tetap berhasil.
+          # Spasi/baris baru dibuang lebih dulu, baru penanda armor dihapus
+          # sebagai teks. Urutan ini penting: kalau armor dibuang per baris,
+          # penanda yang menempel di ujung data ikut membawa data itu hilang.
+          printf '%s' "${KEYSTORE_BASE64}" \
+            | tr -d '[:space:]' \
+            | sed -e 's/-----BEGINCERTIFICATE-----//g' \
+                  -e 's/-----ENDCERTIFICATE-----//g' \
+            | base64 -d > android/asc-release.p12 || {
+              echo "::error::ANDROID_KEYSTORE_BASE64 tidak dapat didekode sebagai base64. Kemungkinan isinya terpotong saat disalin."
+              exit 1
+            }
+
+          if [ ! -s android/asc-release.p12 ]; then
+            echo "::error::Keystore hasil dekode kosong. Periksa isi ANDROID_KEYSTORE_BASE64."
+            exit 1
+          fi
+
+          # Keystore diuji di sini, bukan dibiarkan gagal di tengah Gradle
+          # dengan pesan yang tidak menjelaskan apa-apa.
+          if ! keytool -list \
+                 -keystore android/asc-release.p12 \
+                 -storetype PKCS12 \
+                 -storepass "${KEYSTORE_PASSWORD}" > /dev/null 2>&1; then
+            echo "::error::Keystore tidak dapat dibuka. ANDROID_KEYSTORE_BASE64 rusak, atau ANDROID_KEYSTORE_PASSWORD salah."
+            exit 1
+          fi
+
+          if ! keytool -list \
+                 -keystore android/asc-release.p12 \
+                 -storetype PKCS12 \
+                 -storepass "${KEYSTORE_PASSWORD}" \
+                 -alias "${KEY_ALIAS}" > /dev/null 2>&1; then
+            echo "::error::Alias yang disebut ANDROID_KEY_ALIAS tidak ada di dalam keystore."
+            exit 1
+          fi
+
           {
             echo "storeFile=asc-release.p12"
             echo "storeType=PKCS12"
@@ -197,7 +263,7 @@ jobs:
             echo "keyPassword=${KEY_PASSWORD}"
           } > android/keystore.properties
           echo "tersedia=true" >> "$GITHUB_OUTPUT"
-          echo "Keystore rilis disiapkan."
+          echo "Keystore rilis disiapkan dan terbukti dapat dibuka."
 
       - name: Bangun APK release bertanda tangan
         if: steps.signing.outputs.tersedia == 'true'
