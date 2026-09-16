@@ -7,7 +7,7 @@
 // kembali ke bentuk lama (`-gt 2`, yang meloloskan kode 1), tes ini gagal.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync, mkdtempSync, chmodSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -294,4 +294,150 @@ test('catatan rilis selalu mencantumkan identitas APK', () => {
 
 test('jenis rilis yang tidak dikenal ditolak, bukan didiamkan', () => {
   assert.throws(() => catatanRilis({ mode: 'apa_saja', versionName: '1', versionCode: '4', commit: 'a' }), /tidak dikenal/)
+})
+
+// --- Langkah penyiapan keystore --------------------------------------------
+// Dijalankan sungguhan dengan secret palsu, di direktori sementara, supaya
+// diagnostiknya benar-benar terbukti - bukan sekadar dicocokkan teksnya.
+const SKRIP_SIGNING = skripLangkah('Siapkan keystore rilis')
+
+function adaKeytool() {
+  try { execFileSync('keytool', ['-help'], { stdio: 'ignore' }); return true } catch { return false }
+}
+
+function jalankanSigning(env) {
+  const dir = mkdtempSync(join(tmpdir(), 'asc-sign-'))
+  try {
+    mkdirSync(join(dir, 'android'), { recursive: true })
+    const keluaranGithub = join(dir, 'github_output')
+    writeFileSync(keluaranGithub, '')
+    let kode = 0
+    let teks = ''
+    try {
+      teks = execFileSync('bash', ['-c', SKRIP_SIGNING], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: keluaranGithub,
+          KEYSTORE_BASE64: '', KEYSTORE_PASSWORD: '', KEY_ALIAS: '', KEY_PASSWORD: '', CERT_CURRENT: '',
+          ...env
+        },
+        stdio: 'pipe'
+      }).toString()
+    } catch (galat) {
+      kode = galat.status ?? 1
+      teks = `${galat.stdout ?? ''}${galat.stderr ?? ''}`
+    }
+    return { kode, teks, output: readFileSync(keluaranGithub, 'utf8'), dir }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('secret kosong: langkah menyebut NAMA secret yang kurang', () => {
+  const { kode, teks, output } = jalankanSigning({})
+  assert.equal(kode, 0, 'langkah tidak boleh menggagalkan job, hanya melewati build release')
+  assert.match(output, /tersedia=false/)
+  for (const nama of ['KEYSTORE_BASE64', 'KEYSTORE_PASSWORD', 'KEY_ALIAS', 'KEY_PASSWORD']) {
+    assert.match(teks, new RegExp(nama), `nama secret ${nama} harus disebut`)
+  }
+})
+
+test('secret kosong: hanya yang kosong yang dilaporkan sebagai KOSONG', () => {
+  const { teks } = jalankanSigning({ KEYSTORE_PASSWORD: 'x', KEY_ALIAS: 'asc-release' })
+  assert.match(teks, /ANDROID_KEYSTORE_PASSWORD\s*:\s*terisi/)
+  assert.match(teks, /ANDROID_KEY_ALIAS\s*:\s*terisi/)
+  assert.match(teks, /ANDROID_KEYSTORE_BASE64\s*:\s*KOSONG/)
+  assert.match(teks, /ANDROID_KEY_PASSWORD\s*:\s*KOSONG/)
+})
+
+test('diagnostik tidak pernah mencetak nilai secret', () => {
+  const rahasia = 'NILAIRAHASIAYANGTIDAKBOLEHTERCETAK'
+  const { teks } = jalankanSigning({ KEYSTORE_PASSWORD: rahasia, KEY_ALIAS: rahasia })
+  assert.doesNotMatch(teks, new RegExp(rahasia))
+})
+
+test('base64 rusak digagalkan dengan pesan yang jelas', () => {
+  const { kode, teks } = jalankanSigning({
+    KEYSTORE_BASE64: 'ini jelas bukan base64 keystore !!!',
+    KEYSTORE_PASSWORD: 'x', KEY_ALIAS: 'asc-release', KEY_PASSWORD: 'x'
+  })
+  assert.notEqual(kode, 0)
+  assert.match(teks, /ANDROID_KEYSTORE_BASE64|Keystore/)
+})
+
+test('keystore sah diterima, termasuk bila base64-nya ber-armor certutil', { skip: !adaKeytool() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asc-ks-'))
+  try {
+    const ks = join(dir, 'uji.p12')
+    const sandi = 'sandi-uji-lokal'
+    execFileSync('keytool', [
+      '-genkeypair', '-alias', 'asc-release', '-keyalg', 'RSA', '-keysize', '2048',
+      '-sigalg', 'SHA256withRSA', '-validity', '30', '-storetype', 'PKCS12',
+      '-keystore', ks, '-storepass', sandi, '-keypass', sandi,
+      '-dname', 'CN=Uji, O=Uji, C=ID'
+    ], { stdio: 'ignore' })
+
+    const satuBaris = readFileSync(ks).toString('base64')
+    // Bentuk certutil: penanda armor, dipecah per 64 karakter.
+    const berArmor = ['-----BEGIN CERTIFICATE-----']
+      .concat(satuBaris.match(/.{1,64}/g))
+      .concat(['-----END CERTIFICATE-----']).join('\n')
+
+    for (const [nama, nilai] of [['satu baris', satuBaris], ['ber-armor', berArmor]]) {
+      const { kode, output } = jalankanSigning({
+        KEYSTORE_BASE64: nilai, KEYSTORE_PASSWORD: sandi,
+        KEY_ALIAS: 'asc-release', KEY_PASSWORD: sandi
+      })
+      assert.equal(kode, 0, `bentuk ${nama} seharusnya diterima`)
+      assert.match(output, /tersedia=true/, `bentuk ${nama} seharusnya menandai tersedia`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('kata sandi keystore yang salah ditolak sebelum Gradle dijalankan', { skip: !adaKeytool() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asc-ks2-'))
+  try {
+    const ks = join(dir, 'uji.p12')
+    execFileSync('keytool', [
+      '-genkeypair', '-alias', 'asc-release', '-keyalg', 'RSA', '-keysize', '2048',
+      '-sigalg', 'SHA256withRSA', '-validity', '30', '-storetype', 'PKCS12',
+      '-keystore', ks, '-storepass', 'sandi-benar', '-keypass', 'sandi-benar',
+      '-dname', 'CN=Uji, O=Uji, C=ID'
+    ], { stdio: 'ignore' })
+
+    const { kode, teks } = jalankanSigning({
+      KEYSTORE_BASE64: readFileSync(ks).toString('base64'),
+      KEYSTORE_PASSWORD: 'sandi-salah', KEY_ALIAS: 'asc-release', KEY_PASSWORD: 'sandi-salah'
+    })
+    assert.notEqual(kode, 0)
+    assert.match(teks, /tidak dapat dibuka|PASSWORD/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('alias yang tidak ada di keystore ditolak', { skip: !adaKeytool() }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'asc-ks3-'))
+  try {
+    const ks = join(dir, 'uji.p12')
+    const sandi = 'sandi-uji-lokal'
+    execFileSync('keytool', [
+      '-genkeypair', '-alias', 'alias-lain', '-keyalg', 'RSA', '-keysize', '2048',
+      '-sigalg', 'SHA256withRSA', '-validity', '30', '-storetype', 'PKCS12',
+      '-keystore', ks, '-storepass', sandi, '-keypass', sandi,
+      '-dname', 'CN=Uji, O=Uji, C=ID'
+    ], { stdio: 'ignore' })
+
+    const { kode, teks } = jalankanSigning({
+      KEYSTORE_BASE64: readFileSync(ks).toString('base64'),
+      KEYSTORE_PASSWORD: sandi, KEY_ALIAS: 'asc-release', KEY_PASSWORD: sandi
+    })
+    assert.notEqual(kode, 0)
+    assert.match(teks, /[Aa]lias/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
