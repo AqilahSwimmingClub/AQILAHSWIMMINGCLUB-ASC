@@ -22,7 +22,12 @@ import {
 import { objectKeyDariUrl, masihDipakai } from './lib/berkas-aman.js'
 // Import PDF Hasil Perlombaan. PDF hanya sumber input: seluruh aturannya
 // (parsing, normalisasi, pencocokan, dedupe, PB) ada di modul murni ini.
-import { barisTeksPdf } from './lib/pdf-teks.js'
+import { barisTeksPdf, aturWorkerPdf } from './lib/pdf-teks.js'
+// Worker pdf.js dikemas Vite sebagai berkas LOKAL di dalam bundel, sehingga
+// ikut tersalin ke android/app/src/main/assets/public/ lewat `cap sync`.
+// Tidak ada CDN dan tidak ada jaringan: import PDF bekerja sepenuhnya offline.
+import urlWorkerPdf from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+aturWorkerPdf(urlWorkerPdf)
 import {
   uraiBarisHasil, susunBarisImpor, barisSiapSimpan, keCatatanWaktu,
   bolehImporHasilLomba, JENIS_IMPOR,

@@ -15,7 +15,7 @@
     "android:update": "npm run build && node scripts/set-android-min-sdk.cjs && npx cap sync android",
     "test": "node --test \"tests/**/*.test.js\"",
     "test:tata-letak": "node --test tests/tata-letak.test.js",
-    "test:unit": "node --test tests/penghapusan-permanen.test.js tests/nisan-sinkron.test.js tests/identitas-record.test.js tests/id-tidak-dipakai-ulang.test.js tests/umur-ku.test.js tests/sinkronisasi-role.test.js tests/impor-hasil-lomba.test.js tests/berkas-aman.test.js tests/verifikasi-apk.test.js tests/workflow-rilis.test.js tests/browser-portabel.test.js",
+    "test:unit": "node --test tests/penghapusan-permanen.test.js tests/nisan-sinkron.test.js tests/identitas-record.test.js tests/id-tidak-dipakai-ulang.test.js tests/umur-ku.test.js tests/sinkronisasi-role.test.js tests/impor-hasil-lomba.test.js tests/impor-pdf-nyata.test.js tests/berkas-aman.test.js tests/verifikasi-apk.test.js tests/workflow-rilis.test.js tests/browser-portabel.test.js",
     "test:e2e": "node --test tests/e2e-responsif.test.js",
     "test:supabase": "node --test tests/supabase-nyata.test.js",
     "verifikasi:apk": "node scripts/verifikasi-apk.cjs"
@@ -25,6 +25,7 @@
     "@supabase/supabase-js": "^2.52.1",
     "jspdf": "^3.0.2",
     "jspdf-autotable": "^5.0.2",
+    "pdfjs-dist": "^4.10.38",
     "xlsx-js-style": "^1.2.0"
   },
   "devDependencies": {

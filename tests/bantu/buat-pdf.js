@@ -1,54 +1,44 @@
-// Membuat PDF berisi lapisan teks, untuk menguji pengurai tanpa berkas biner
-// yang ikut masuk repositori. Strukturnya minimal tetapi sah: header, katalog,
-// satu halaman, dan satu content stream berisi operator teks.
-import { deflateSync } from 'node:zlib'
+// PDF uji dibuat oleh GENERATOR SUNGGUHAN, bukan dirangkai tangan.
+//
+// Ini penting. Fixture buatan tangan di v1.2.3 menulis satu baris teks per
+// entri, sehingga pengurai yang hanya membaca baris visual tampak benar -
+// padahal pada PDF tabel yang sesungguhnya sel yang panjang terbungkus ke
+// beberapa baris dan pengurai itu gagal total.
+//
+// jsPDF + jspdf-autotable sudah menjadi dependensi aplikasi ini (dipakai untuk
+// ekspor laporan). Keluarannya PDF nyata: teks terkompresi, tabel dengan
+// kolom, sel yang terbungkus, dan header yang terulang di setiap halaman.
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
-function escapePdf(teks) {
-  return String(teks).replace(/([\\()])/g, '\\$1')
+export const KEPALA_ASC = [
+  ['Nama Atlet', 'Tanggal Perlombaan', 'Gaya Renang', 'Jarak Perlombaan', 'Catatan Waktu']
+]
+
+// Tabel hasil perlombaan bergaya ASC.
+//
+// `baris` adalah array of array sesuai KEPALA_ASC.
+export function buatPdfTabel(baris, { judul = 'ASC Catatan Waktu', kepala = KEPALA_ASC, startY = 20 } = {}) {
+  const doc = new jsPDF()
+  if (judul) doc.text(judul, 14, 14)
+  autoTable(doc, { head: kepala, body: baris, startY, styles: { fontSize: 9 } })
+  return new Uint8Array(doc.output('arraybuffer'))
 }
 
-// baris: array string. Setiap baris menjadi satu operasi Td + Tj.
-export function buatPdfTeks(baris, { kompres = true } = {}) {
-  const isi = ['BT', '/F1 12 Tf']
-  baris.forEach((b, i) => {
-    isi.push(`1 0 0 1 72 ${700 - i * 16} Td`)
-    isi.push(`(${escapePdf(b)}) Tj`)
-  })
-  isi.push('ET')
-  const contentText = isi.join('\n')
-  const contentBytes = kompres
-    ? new Uint8Array(deflateSync(Buffer.from(contentText, 'latin1')))
-    : new Uint8Array(Buffer.from(contentText, 'latin1'))
-
-  const objek = []
-  objek[1] = '<< /Type /Catalog /Pages 2 0 R >>'
-  objek[2] = '<< /Type /Pages /Kids [3 0 R] /Count 1 >>'
-  objek[3] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'
-  objek[5] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
-
-  const bagian = []
-  const tulis = s => bagian.push(Buffer.from(s, 'latin1'))
-
-  tulis('%PDF-1.4\n')
-  for (const nomor of [1, 2, 3]) tulis(`${nomor} 0 obj\n${objek[nomor]}\nendobj\n`)
-
-  const kamus = kompres
-    ? `<< /Length ${contentBytes.length} /Filter /FlateDecode >>`
-    : `<< /Length ${contentBytes.length} >>`
-  tulis(`4 0 obj\n${kamus}\nstream\n`)
-  bagian.push(Buffer.from(contentBytes))
-  tulis('\nendstream\nendobj\n')
-
-  tulis(`5 0 obj\n${objek[5]}\nendobj\n`)
-  tulis('trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n')
-
-  return new Uint8Array(Buffer.concat(bagian))
+// PDF berisi teks biasa tanpa tabel, untuk memastikan jalur non-tabel tetap
+// bekerja seperti sebelumnya.
+export function buatPdfTeks(baris, { judul = '' } = {}) {
+  const doc = new jsPDF()
+  let y = 20
+  if (judul) { doc.text(judul, 14, 14); y = 26 }
+  for (const b of baris) { doc.text(String(b), 14, y); y += 8 }
+  return new Uint8Array(doc.output('arraybuffer'))
 }
 
 // PDF tanpa lapisan teks sama sekali, meniru hasil pindaian.
 export function buatPdfTanpaTeks() {
-  const bagian = [Buffer.from('%PDF-1.4\n', 'latin1')]
-  bagian.push(Buffer.from('1 0 obj\n<< /Type /Catalog >>\nendobj\n', 'latin1'))
-  bagian.push(Buffer.from('trailer\n<< /Size 2 /Root 1 0 R >>\n%%EOF\n', 'latin1'))
-  return new Uint8Array(Buffer.concat(bagian))
+  const doc = new jsPDF()
+  doc.setFillColor(200, 200, 200)
+  doc.rect(20, 20, 100, 60, 'F')
+  return new Uint8Array(doc.output('arraybuffer'))
 }
