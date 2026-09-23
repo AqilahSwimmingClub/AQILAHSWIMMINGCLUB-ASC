@@ -47,8 +47,10 @@ env:
   # tercetak di setiap APK. Bila kosong, kesamaan tanda tangan tidak dapat
   # dibuktikan dan APK tidak akan dijadikan GitHub Release.
   TARGET_SDK_MINIMAL: '35'
-  # Batas bawah versionCode untuk rilis dengan identitas signing baru.
-  VERSION_CODE_MINIMAL: '4'
+  # Batas bawah versionCode rilis ini. WAJIB dinaikkan setiap rilis menjadi
+  # versionCode yang akan diterbitkan, karena nilai inilah yang membuktikan
+  # versi naik di atas rilis sebelumnya. Rilis terakhir: v1.2.2 = versionCode 5.
+  VERSION_CODE_MINIMAL: '6'
 
 jobs:
   uji-dan-bangun:
