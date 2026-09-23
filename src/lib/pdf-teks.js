@@ -1,211 +1,253 @@
-// Pengambilan teks dari PDF, tanpa library tambahan.
+// Pengambilan teks dari PDF, berbasis POSISI.
 //
-// Alasan tidak memakai pdf.js: satu-satunya yang dibutuhkan fitur Import Hasil
-// Perlombaan adalah LAPISAN TEKS sebuah PDF. pdf.js membawa renderer, font
-// engine, dan worker yang menambah megabyte ke APK untuk kemampuan yang tidak
-// dipakai. Inflate zlib sudah tersedia di platform lewat DecompressionStream
-// (Chrome/WebView Android 10 ke atas dan Node 18 ke atas), jadi cukup itu.
+// Mengapa ditulis ulang di v1.2.4
+// ------------------------------
+// Versi sebelumnya memindai byte PDF sendiri dan mengeluarkan teks per BARIS
+// VISUAL. Pada PDF tabel hasil perlombaan yang sesungguhnya, satu sel yang
+// terlalu panjang dibungkus menjadi beberapa baris visual, sehingga:
 //
-// Yang ditangani: stream FlateDecode dan stream tanpa filter, operator teks
-// Tj TJ ' " dengan string literal ( ) maupun heksadesimal < >, serta pemisah
-// baris dari Td TD T* dan ET.
+//   "ZHEVANNA ALMEERA DEEPIKA"   <- baris visual 1
+//   "JUMAWAL"                    <- baris visual 2
 //
-// Yang TIDAK ditangani, dan memang tidak perlu: PDF terenkripsi, PDF hasil
-// pindaian tanpa lapisan teks, dan font dengan pemetaan CID tidak standar.
-// Ketiganya dilaporkan apa adanya lewat galat yang jelas - tidak pernah
-// menghasilkan teks karangan.
+// terbaca sebagai dua hal berbeda, dan nama atlet berakhir menjadi "JUMAWAL".
+// Hal yang sama terjadi pada "Gaya" + "Punggung". Akibatnya nama tidak pernah
+// cocok dengan Data Atlet dan tidak satu pun baris siap disimpan - persis
+// gejala yang muncul di Android.
+//
+// Sekarang teks diambil lewat pdf.js beserta koordinatnya, lalu SEL tabel
+// direkonstruksi: item dikelompokkan per baris visual berdasarkan Y, kolom
+// dikenali dari sebaran X, dan baris visual yang merupakan sambungan digabung
+// ke dalam sel kolomnya masing-masing. Keluarannya adalah isi sel yang sudah
+// utuh, dalam urutan pembacaan - bentuk yang memang sudah ditangani pengurai
+// record.
+//
+// pdf.js juga menyelesaikan hal yang tidak mungkin ditangani pemindai byte
+// buatan sendiri: font subset dengan /ToUnicode CMap, yang lazim pada PDF
+// keluaran Word, Excel, dan Google Docs.
 
-const PENANDA_STREAM = 'stream'
-const PENANDA_AKHIR = 'endstream'
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs'
 
-function adaDecompressionStream() {
-  return typeof DecompressionStream === 'function'
+// Worker pdf.js WAJIB berkas lokal yang ikut dikemas ke APK. Tidak ada CDN dan
+// tidak ada jaringan: import PDF harus bekerja sepenuhnya offline.
+// main.js memanggil ini sekali dengan URL hasil bundling Vite.
+export function aturWorkerPdf(url) {
+  if (url) pdfjs.GlobalWorkerOptions.workerSrc = url
 }
 
-// Inflate satu blok byte. PDF FlateDecode memakai zlib (RFC 1950), tetapi
-// sebagian penghasil PDF menulis deflate mentah, jadi keduanya dicoba.
-async function inflate(bytes) {
-  if (!adaDecompressionStream()) {
-    throw new Error('Peramban ini tidak mendukung DecompressionStream, sehingga PDF terkompresi tidak dapat dibaca.')
-  }
-  for (const format of ['deflate', 'deflate-raw']) {
-    try {
-      const aliran = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format))
-      return new Uint8Array(await new Response(aliran).arrayBuffer())
-    } catch {
-      // Coba format berikutnya.
+// Toleransi Y untuk menganggap dua item berada pada baris visual yang sama.
+const TOLERANSI_BARIS = 2.2
+
+// Dua ambang yang berbeda, dan perbedaannya penting.
+//
+// JARAK_GABUNG_SEL: jarak maksimum antara akhir sebuah item teks dan awal item
+// berikutnya supaya keduanya dianggap masih satu sel. Harus SEMPIT - kira-kira
+// selebar satu spasi. Ambang yang longgar membuat seluruh baris menyatu
+// menjadi satu sel, kolom tidak lagi terdeteksi, dan rekonstruksi tabel gagal.
+//
+// TOLERANSI_KOLOM: seberapa jauh dua posisi X boleh berbeda namun tetap
+// dianggap kolom yang sama. Ini boleh lebih longgar karena isi sel yang
+// berbeda panjang membuat awal kolom sedikit bergeser.
+const JARAK_GABUNG_SEL = 4
+const TOLERANSI_KOLOM = 12
+
+// Kata yang menandai baris header tabel. Header berulang pada setiap halaman,
+// dan harus mengakhiri baris yang sedang dikumpulkan - bukan ikut tergabung.
+const KATA_HEADER = ['nama', 'tanggal', 'gaya', 'jarak', 'waktu', 'catatan', 'perlombaan', 'atlet', 'renang']
+
+function terlihatSepertiHeader(sel) {
+  const teks = sel.join(' ').toLowerCase()
+  if (!teks.trim()) return false
+  const cocok = KATA_HEADER.filter(k => teks.includes(k)).length
+  return cocok >= 2 && !/\d{1,2}[:.]\d{2}/.test(teks)
+}
+
+// Apakah sebuah baris visual memuat kolom terakhir tabel hasil perlombaan,
+// yaitu catatan waktu atau status seperti DNS/DQ/DNF.
+//
+// Inilah penanda paling dapat diandalkan bahwa baris itu adalah BARIS DATA,
+// bukan sambungan. Menghitung jumlah kolom terisi saja tidak cukup: ketika
+// dua sel terbungkus sekaligus - nama menjadi "... DI" + "ASC" dan gaya
+// menjadi "Gaya" + "Kupu-kupu" - baris sambungannya mengisi dua kolom dan
+// ikut dikira baris data, sehingga satu record terbelah dua.
+function memuatWaktu(sel) {
+  return sel.some(s =>
+    /\b\d{1,2}[:.]\d{2}([:.]\d{1,2})?\b/.test(s) ||
+    /^\s*(DNS|DQ|DSQ|DNF|NS|WD)\s*$/i.test(s))
+}
+
+// --- Pengelompokan item menjadi baris visual dan sel ------------------------
+
+function barisVisual(items) {
+  const bersih = items
+    .filter(it => it && typeof it.str === 'string' && it.str.trim())
+    .map(it => {
+      const t = it.transform || []
+      return { teks: it.str, x: Number(t[4]) || 0, y: Number(t[5]) || 0, lebar: Number(it.width) || 0 }
+    })
+  if (!bersih.length) return []
+
+  // Y menurun dari atas ke bawah halaman.
+  bersih.sort((a, b) => (b.y - a.y) || (a.x - b.x))
+
+  const baris = []
+  for (const item of bersih) {
+    const terakhir = baris[baris.length - 1]
+    if (terakhir && Math.abs(terakhir.y - item.y) <= TOLERANSI_BARIS) {
+      terakhir.item.push(item)
+      // Y baris diambil rata-rata supaya pergeseran kecil tidak menumpuk.
+      terakhir.y = (terakhir.y * (terakhir.item.length - 1) + item.y) / terakhir.item.length
+    } else {
+      baris.push({ y: item.y, item: [item] })
     }
   }
-  return null
-}
 
-// Byte PDF dibaca sebagai latin1 supaya posisi byte dan posisi karakter selalu
-// satu banding satu. Ini penting karena offset `stream`/`endstream` dihitung
-// dari teks, sedangkan isinya diproses sebagai byte.
-function keLatin1(bytes) {
-  let hasil = ''
-  const potong = 0x8000
-  for (let i = 0; i < bytes.length; i += potong) {
-    hasil += String.fromCharCode.apply(null, bytes.subarray(i, i + potong))
-  }
-  return hasil
-}
-
-// Ambil seluruh isi stream, sudah di-inflate bila perlu.
-async function kumpulkanStream(bytes) {
-  const teks = keLatin1(bytes)
-  const hasil = []
-  let posisi = 0
-
-  while (posisi < teks.length) {
-    const mulai = teks.indexOf(PENANDA_STREAM, posisi)
-    if (mulai === -1) break
-    // Hindari salah tangkap kata 'endstream'.
-    if (teks.slice(mulai - 3, mulai) === 'end') { posisi = mulai + PENANDA_STREAM.length; continue }
-
-    const kamus = teks.slice(Math.max(0, mulai - 800), mulai)
-    let isiMulai = mulai + PENANDA_STREAM.length
-    if (teks[isiMulai] === '\r') isiMulai++
-    if (teks[isiMulai] === '\n') isiMulai++
-
-    const akhir = teks.indexOf(PENANDA_AKHIR, isiMulai)
-    if (akhir === -1) break
-
-    // Penulis PDF umumnya menyisipkan akhir baris sebelum `endstream`. Byte itu
-    // bukan bagian dari data terkompresi, dan inflate menolaknya sebagai sisa.
-    let batas = akhir
-    while (batas > isiMulai && (teks[batas - 1] === '\n' || teks[batas - 1] === '\r')) batas--
-
-    const mentah = bytes.subarray(isiMulai, batas)
-    const terkompresi = /\/Filter\s*(\/FlateDecode|\[\s*\/FlateDecode)/.test(kamus)
-
-    if (terkompresi) {
-      const terbuka = await inflate(mentah)
-      if (terbuka) hasil.push(terbuka)
-    } else if (!/\/Filter/.test(kamus)) {
-      hasil.push(mentah)
+  // Item dalam satu baris digabung menjadi sel berdasarkan jarak X.
+  return baris.map(b => {
+    b.item.sort((p, q) => p.x - q.x)
+    const sel = []
+    for (const it of b.item) {
+      const terakhir = sel[sel.length - 1]
+      if (terakhir && it.x - (terakhir.x + terakhir.lebar) <= JARAK_GABUNG_SEL) {
+        terakhir.teks = `${terakhir.teks} ${it.teks}`.replace(/\s+/g, ' ').trim()
+        terakhir.lebar = (it.x + it.lebar) - terakhir.x
+      } else {
+        sel.push({ teks: it.teks.trim(), x: it.x, lebar: it.lebar })
+      }
     }
-    // Stream dengan filter lain (DCTDecode untuk gambar, dan sebagainya)
-    // sengaja dilewati: isinya bukan teks.
-
-    posisi = akhir + PENANDA_AKHIR.length
-  }
-  return hasil
+    return sel.filter(s => s.teks)
+  }).filter(sel => sel.length)
 }
 
-// Urai string literal PDF: (teks) dengan escape \( \) \\ \n \r \t \b \f dan oktal.
-function uraiLiteral(teks, mulai) {
-  let hasil = ''
-  let dalam = 1
-  let i = mulai
-  while (i < teks.length) {
-    const c = teks[i]
-    if (c === '\\') {
-      const n = teks[i + 1]
-      const peta = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\' }
-      if (n in peta) { hasil += peta[n]; i += 2; continue }
-      const oktal = teks.slice(i + 1, i + 4).match(/^[0-7]{1,3}/)
-      if (oktal) { hasil += String.fromCharCode(parseInt(oktal[0], 8)); i += 1 + oktal[0].length; continue }
-      if (n === '\n') { i += 2; continue } // sambungan baris
-      i += 2
-      continue
+// Batas kolom diambil dari posisi X sel yang paling sering muncul.
+function batasKolom(semuaBaris) {
+  const titik = []
+  for (const sel of semuaBaris) for (const s of sel) titik.push(s.x)
+  if (!titik.length) return []
+  titik.sort((a, b) => a - b)
+
+  // Kelompokkan X yang berdekatan menjadi satu kolom.
+  const kolom = []
+  for (const x of titik) {
+    const terakhir = kolom[kolom.length - 1]
+    if (terakhir && x - terakhir.x <= TOLERANSI_KOLOM) {
+      terakhir.jumlah++
+      terakhir.x = (terakhir.x * (terakhir.jumlah - 1) + x) / terakhir.jumlah
+    } else {
+      kolom.push({ x, jumlah: 1 })
     }
-    if (c === '(') { dalam++; hasil += c; i++; continue }
-    if (c === ')') { dalam--; if (!dalam) return { teks: hasil, akhir: i + 1 }; hasil += c; i++; continue }
-    hasil += c
-    i++
   }
-  return { teks: hasil, akhir: i }
+  // Kolom yang hanya muncul sekali biasanya judul atau catatan kaki.
+  return kolom.filter(k => k.jumlah >= 2).map(k => k.x).sort((a, b) => a - b)
 }
 
-// Urai string heksadesimal PDF: <48656C6C6F>
-function uraiHex(isi) {
-  const bersih = isi.replace(/[^0-9a-fA-F]/g, '')
-  const genap = bersih.length % 2 ? bersih + '0' : bersih
-  let hasil = ''
-  for (let i = 0; i < genap.length; i += 2) {
-    hasil += String.fromCharCode(parseInt(genap.slice(i, i + 2), 16))
-  }
-  // UTF-16BE dengan BOM dipakai sebagian penghasil PDF.
-  if (hasil.charCodeAt(0) === 0xfe && hasil.charCodeAt(1) === 0xff) {
-    let utf = ''
-    for (let i = 2; i + 1 < hasil.length; i += 2) {
-      utf += String.fromCharCode((hasil.charCodeAt(i) << 8) | hasil.charCodeAt(i + 1))
-    }
-    return utf
-  }
-  return hasil
+function indeksKolom(x, batas) {
+  let pilih = 0
+  let jarak = Infinity
+  batas.forEach((b, i) => {
+    const d = Math.abs(x - b)
+    if (d < jarak) { jarak = d; pilih = i }
+  })
+  return pilih
 }
 
-// Ambil teks dari satu content stream.
-export function teksDariContentStream(isi) {
-  const teks = typeof isi === 'string' ? isi : keLatin1(isi)
+// --- Rekonstruksi baris logis ----------------------------------------------
+
+// Menggabungkan baris visual menjadi baris logis tabel, lalu mengeluarkan isi
+// setiap sel sebagai satu entri teks. Sel yang terbungkus ke baris berikutnya
+// disambung ke sel kolomnya sendiri, bukan menjadi entri baru.
+export function selDariBarisVisual(semuaBaris) {
+  const batas = batasKolom(semuaBaris)
   const keluaran = []
-  let baris = ''
-  let i = 0
 
-  const akhiriBaris = () => {
-    const rapi = baris.trim()
-    if (rapi) keluaran.push(rapi)
-    baris = ''
+  // Tanpa struktur kolom yang meyakinkan, teks dikeluarkan apa adanya per
+  // baris visual. PDF non-tabel tetap terbaca seperti sebelumnya.
+  if (batas.length < 2) {
+    for (const sel of semuaBaris) keluaran.push(sel.map(s => s.teks).join(' '))
+    return keluaran.filter(Boolean)
   }
 
-  while (i < teks.length) {
-    const c = teks[i]
-
-    if (c === '(') {
-      const { teks: isiLiteral, akhir } = uraiLiteral(teks, i + 1)
-      baris += isiLiteral
-      i = akhir
-      continue
-    }
-
-    if (c === '<' && teks[i + 1] !== '<') {
-      const tutup = teks.indexOf('>', i + 1)
-      if (tutup === -1) break
-      baris += uraiHex(teks.slice(i + 1, tutup))
-      i = tutup + 1
-      continue
-    }
-
-    // Operator yang memindahkan posisi teks dianggap sebagai pindah baris.
-    if (c === 'T' && (teks[i + 1] === 'd' || teks[i + 1] === 'D' || teks[i + 1] === '*')) {
-      akhiriBaris()
-      i += 2
-      continue
-    }
-    if (c === 'E' && teks.slice(i, i + 2) === 'ET') {
-      akhiriBaris()
-      i += 2
-      continue
-    }
-
-    i++
+  let kini = null
+  const tutup = () => {
+    if (!kini) return
+    for (const isi of kini) if (isi && isi.trim()) keluaran.push(isi.trim())
+    kini = null
   }
-  akhiriBaris()
+
+  for (const sel of semuaBaris) {
+    const teksSel = sel.map(s => s.teks)
+
+    if (terlihatSepertiHeader(teksSel)) { tutup(); continue }
+
+    const kolomTerisi = new Set(sel.map(s => indeksKolom(s.x, batas)))
+    // Baris data dikenali dari kehadiran kolom waktu. Tabel yang kolom
+    // terakhirnya bukan waktu tetap tertangani lewat ambang jumlah kolom.
+    const barisData = memuatWaktu(teksSel) ||
+      kolomTerisi.size >= Math.ceil(batas.length * 0.6)
+
+    // Baris data memulai record baru; baris sambungan menempel pada record
+    // yang sedang dikumpulkan, di kolomnya sendiri.
+    if (barisData && kini && kini.some(Boolean)) tutup()
+
+    if (!kini) kini = new Array(batas.length).fill('')
+    for (const s of sel) {
+      const i = indeksKolom(s.x, batas)
+      kini[i] = kini[i] ? `${kini[i]} ${s.teks}` : s.teks
+    }
+  }
+  tutup()
+
   return keluaran
 }
 
-// Teks seluruh PDF sebagai daftar baris.
+// --- API utama --------------------------------------------------------------
+
+// Teks seluruh PDF sebagai daftar entri siap diurai.
 //
-// `bytes` adalah Uint8Array/ArrayBuffer isi berkas PDF. Berkas TIDAK disimpan
-// ke mana pun: seluruh pemrosesan terjadi di memori dan pemanggil bebas
-// melepaskan byte-nya begitu selesai.
+// `bytes` adalah isi berkas PDF. Berkas TIDAK disimpan ke mana pun: seluruh
+// pemrosesan terjadi di memori, dan pemanggil bebas melepaskan byte-nya
+// begitu selesai.
 export async function barisTeksPdf(bytes) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
-  if (data.length < 5 || keLatin1(data.subarray(0, 5)) !== '%PDF-') {
+  if (data.length < 5 || String.fromCharCode(...data.subarray(0, 5)) !== '%PDF-') {
     throw new Error('Berkas ini bukan PDF yang sah.')
   }
-  if (/\/Encrypt\b/.test(keLatin1(data.subarray(0, Math.min(data.length, 4096))))) {
-    throw new Error('PDF ini terkunci kata sandi, sehingga teksnya tidak dapat dibaca.')
+
+  let dokumen
+  try {
+    dokumen = await pdfjs.getDocument({
+      // pdf.js memindahkan kepemilikan buffer; salinan menjaga byte pemanggil.
+      data: data.slice(),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: false,
+      disableAutoFetch: true,
+      disableStream: true
+    }).promise
+  } catch (galat) {
+    if (/password|encrypt/i.test(galat?.message || '')) {
+      throw new Error('PDF ini terkunci kata sandi, sehingga teksnya tidak dapat dibaca.')
+    }
+    throw new Error('PDF ini tidak dapat dibuka. Pastikan berkasnya tidak rusak.')
   }
 
-  const aliran = await kumpulkanStream(data)
-  const baris = []
-  for (const blok of aliran) baris.push(...teksDariContentStream(blok))
-
-  if (!baris.length) {
-    throw new Error('PDF ini tidak memiliki lapisan teks yang dapat dibaca. Kemungkinan berupa hasil pindaian atau foto, sehingga harus diinput manual.')
+  const keluaran = []
+  try {
+    for (let halaman = 1; halaman <= dokumen.numPages; halaman++) {
+      const page = await dokumen.getPage(halaman)
+      try {
+        const isi = await page.getTextContent()
+        keluaran.push(...selDariBarisVisual(barisVisual(isi.items)))
+      } finally {
+        page.cleanup()
+      }
+    }
+  } finally {
+    // Dokumen dilepas apa pun yang terjadi; tidak ada yang disimpan.
+    await dokumen.destroy()
   }
-  return baris
+
+  if (!keluaran.length) {
+    throw new Error('PDF tidak memiliki teks yang dapat dibaca. Gunakan PDF hasil perlombaan berbasis teks.')
+  }
+  return keluaran
 }

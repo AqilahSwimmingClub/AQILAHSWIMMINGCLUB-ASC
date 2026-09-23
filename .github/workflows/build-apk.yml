@@ -49,8 +49,8 @@ env:
   TARGET_SDK_MINIMAL: '35'
   # Batas bawah versionCode rilis ini. WAJIB dinaikkan setiap rilis menjadi
   # versionCode yang akan diterbitkan, karena nilai inilah yang membuktikan
-  # versi naik di atas rilis sebelumnya. Rilis terakhir: v1.2.2 = versionCode 5.
-  VERSION_CODE_MINIMAL: '6'
+  # versi naik di atas rilis sebelumnya. Rilis terakhir: v1.2.3 = versionCode 6.
+  VERSION_CODE_MINIMAL: '7'
 
 jobs:
   uji-dan-bangun:

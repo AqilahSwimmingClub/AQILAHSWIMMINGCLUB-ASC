@@ -6,7 +6,7 @@
 // pernah mengarang angka untuk hasil DNS/DQ/DNF.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { barisTeksPdf, teksDariContentStream } from '../src/lib/pdf-teks.js'
+import { barisTeksPdf } from '../src/lib/pdf-teks.js'
 import { buatPdfTeks, buatPdfTanpaTeks } from './bantu/buat-pdf.js'
 import {
   normalkanGaya, normalkanJarak, normalkanWaktu, normalkanTanggal, normalkanNama,
@@ -31,24 +31,17 @@ const PDF_CONTOH = [
 // --- 1. PDF teks dapat diparse ---------------------------------------------
 
 test('1. PDF berbasis teks terbaca barisnya', async () => {
+  // Rekonstruksi tabel dan sel diuji tuntas di tests/impor-pdf-nyata.test.js,
+  // yang masuk lewat PDF biner hasil generator sungguhan.
   assert.deepEqual(await barisTeksPdf(buatPdfTeks(PDF_CONTOH)), PDF_CONTOH)
 })
 
-test('1b. PDF tanpa kompresi juga terbaca', async () => {
-  assert.deepEqual(await barisTeksPdf(buatPdfTeks(PDF_CONTOH, { kompres: false })), PDF_CONTOH)
-})
-
 test('1c. PDF hasil pindaian ditolak dengan pesan jelas, bukan data karangan', async () => {
-  await assert.rejects(() => barisTeksPdf(buatPdfTanpaTeks()), /tidak memiliki lapisan teks/)
+  await assert.rejects(() => barisTeksPdf(buatPdfTanpaTeks()), /tidak memiliki teks yang dapat dibaca/)
 })
 
 test('1d. berkas yang bukan PDF ditolak', async () => {
   await assert.rejects(() => barisTeksPdf(new Uint8Array([1, 2, 3, 4, 5])), /bukan PDF/)
-})
-
-test('1e. string heksadesimal dan escape PDF terbaca', () => {
-  const isi = '<5A4845 56414E4E41> Tj 1 0 0 1 72 600 Td (Gaya \\(Dada\\)) Tj ET'
-  assert.deepEqual(teksDariContentStream(isi), ['ZHEVANNA', 'Gaya (Dada)'])
 })
 
 // --- 2-5. Pencocokan nama ---------------------------------------------------
