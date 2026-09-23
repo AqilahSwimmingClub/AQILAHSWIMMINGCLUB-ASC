@@ -1799,3 +1799,11 @@ dialog{max-width:calc(100vw - 24px)}
   table td{grid-template-columns:minmax(78px,34%) minmax(0,1fr)!important;gap:8px!important}
   .status{white-space:normal;overflow-wrap:anywhere}
 }
+
+/* ---------- V3.3: Import PDF Hasil Perlombaan ----------
+   Dua utilitas tata letak saja. Tidak ada warna, tipografi, atau komponen
+   baru: tombol, tabel, dan dialog memakai gaya ASC yang sudah ada. */
+.card-head-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end;min-width:0}
+.modal-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px}
+#importPdfDialog .modal-form{max-width:min(96vw,980px)}
+#importPdfPreview{margin-top:12px;min-width:0}
