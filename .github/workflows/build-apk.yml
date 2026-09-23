@@ -332,13 +332,13 @@ jobs:
 
           # APK debug diberi nama yang menyatakan statusnya, supaya tidak pernah
           # dikira APK pembaruan.
-          DEBUG_APK="ASC-${VN}-${VC}-DEBUG-UJI-SAJA-${PENDEK}.apk"
+          DEBUG_APK="ASC-${VN}-DEBUG-UJI-SAJA.apk"
           cp android/app/build/outputs/apk/debug/app-debug.apk "keluaran-apk/${DEBUG_APK}"
           echo "nama_apk_debug=${DEBUG_APK}" >> "$GITHUB_OUTPUT"
 
           RELEASE_SRC=android/app/build/outputs/apk/release/app-release.apk
           if [ -f "${RELEASE_SRC}" ]; then
-            RELEASE_APK="ASC-${VN}-${VC}-release-${PENDEK}.apk"
+            RELEASE_APK="ASC-${VN}-release.apk"
             cp "${RELEASE_SRC}" "keluaran-apk/${RELEASE_APK}"
             echo "nama_apk_release=${RELEASE_APK}" >> "$GITHUB_OUTPUT"
           fi
@@ -376,7 +376,7 @@ jobs:
       - name: Unggah APK debug (bukan APK pembaruan)
         uses: actions/upload-artifact@v4
         with:
-          name: asc-apk-DEBUG-UJI-SAJA-${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
+          name: asc-apk-DEBUG-UJI-SAJA-${{ steps.versi.outputs.version_name }}
           path: |
             keluaran-apk/*DEBUG-UJI-SAJA*.apk
             keluaran-apk/SHA256SUMS.txt
@@ -387,7 +387,7 @@ jobs:
         if: steps.signing.outputs.tersedia == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: asc-apk-release-${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
+          name: asc-apk-release-${{ steps.versi.outputs.version_name }}
           path: |
             keluaran-apk/*release*.apk
             keluaran-apk/SHA256SUMS.txt
@@ -428,7 +428,7 @@ jobs:
           steps.verifikasi_release.outputs.terverifikasi == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.versi.outputs.version_name }}-${{ steps.versi.outputs.version_code }}
+          tag_name: v${{ steps.versi.outputs.version_name }}
           name: ASC ${{ steps.versi.outputs.version_name }} (versionCode ${{ steps.versi.outputs.version_code }})
           body: ${{ steps.catatan.outputs.isi }}
           files: |

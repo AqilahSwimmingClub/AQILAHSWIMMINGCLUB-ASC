@@ -11,6 +11,13 @@ import {
   nextSequentialId, nextAvailableDeterministicId, isIdSafeForNewRecord,
   mergeStateWithoutLoss as mergeStateWithoutLossPure, resolveCollectionFromSources
 } from './lib/sync-merge.js'
+// Umur, KU, relasi atlet, penyaringan notifikasi, dan persetujuan pendaftaran
+// dipusatkan di satu modul murni supaya dapat diuji tanpa DOM.
+import {
+  calculateAge, ageGroupFor, recordsForAthlete,
+  notificationsForParent, notificationsForCoach,
+  approveRegistration as approveRegistrationPure
+} from './lib/atlet.js'
 
 // crypto.randomUUID() tidak selalu tersedia pada HTTP alamat IP lokal (mis. 192.168.x.x).
 // Gunakan generator UUID yang tetap bekerja di laptop, HP, localhost, dan jaringan Wi-Fi.
@@ -486,7 +493,6 @@ function repairPendingDeletions(entries){
 }
 const CLIENT_ID = localStorage.getItem('asc_client_id') || createId()
 trySetLocalStorage('asc_client_id', CLIENT_ID)
-const AGE_REFERENCE_DATE = new Date('2026-01-01T00:00:00')
 
 const defaultState = {
   settings: { clubName:'AQILAH Swimming Club', coachName:'Fahmi Djawas, S.Pd.', logo:'', adminUsername:'admin', adminPassword:'123456' },
@@ -587,16 +593,11 @@ const app = document.querySelector('#app')
 const strokes = ['Gaya Bebas','Gaya Bebas Fins','Gaya Punggung','Gaya Punggung Fins','Gaya Kupu-kupu','Gaya Kupu-kupu Fins','Gaya Dada']
 
 function esc(v='') { return String(v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) }
-function calcAge(birth) {
-  const d=new Date(`${birth}T00:00:00`); if(Number.isNaN(d.getTime())) return ''
-  let a=AGE_REFERENCE_DATE.getFullYear()-d.getFullYear()
-  if(AGE_REFERENCE_DATE.getMonth()<d.getMonth()||(AGE_REFERENCE_DATE.getMonth()===d.getMonth()&&AGE_REFERENCE_DATE.getDate()<d.getDate())) a--
-  return Math.max(0,a)
-}
-function calcGroup(birth) {
-  const y=Number(String(birth).slice(0,4)); if(!y)return ''
-  if(y<=2010)return 'KU 1'; if(y<=2012)return 'KU 2'; if(y<=2014)return 'KU 3'; if(y<=2016)return 'KU 4'; if(y<=2018)return 'KU 5B'; return 'KU 5A'
-}
+// Umur dihitung terhadap TANGGAL SISTEM, bukan tanggal acuan yang dipatok
+// mati. Rumus dan aturan KU ada di src/lib/atlet.js; di sini hanya
+// pembungkusnya supaya pemanggil lama tetap bekerja tanpa diubah satu per satu.
+function calcAge(birth) { return calculateAge(birth) }
+function calcGroup(birth) { return ageGroupFor(birth) }
 function nextAthleteId() {
   // ID atlet TIDAK PERNAH dipakai ulang. Dulu nomor terkecil yang kosong dipakai
   // kembali, sehingga atlet baru bisa memperoleh ID yang masih bernisan
@@ -1489,13 +1490,14 @@ function unreadNotifications(){return (state.notifications||[]).filter(n=>(n.not
 function notificationAudienceOf(n){return n?.notificationAudience||n?.recipientRole||'admin'}
 function notificationOwnerId(n){return String(n?.athleteId||n?.coachId||n?.recipientId||'')}
 function sortNotificationsNewestFirst(list){return list.slice().sort((a,b)=>String(b?.createdAt||'').localeCompare(String(a?.createdAt||'')))}
+// Penyaringan notifikasi GAGAL-TERTUTUP. Versi lama memakai `!owner||cocok`,
+// sehingga ID pemilik yang kosong justru meloloskan notifikasi SELURUH orang
+// tua - atau seluruh pelatih - ke satu akun.
 function parentNotificationList(athleteId=parentAthleteId){
-  const owner=String(athleteId||'')
-  return sortNotificationsNewestFirst((state.notifications||[]).filter(n=>notificationAudienceOf(n)==='parent'&&(!owner||notificationOwnerId(n)===owner)))
+  return sortNotificationsNewestFirst(notificationsForParent(state.notifications, athleteId))
 }
 function coachNotificationList(id=coachId){
-  const owner=String(id||'')
-  return sortNotificationsNewestFirst((state.coachNotifications||[]).filter(n=>!owner||String(n?.coachId||n?.recipientId||'')===owner))
+  return sortNotificationsNewestFirst(notificationsForCoach(state.coachNotifications, id))
 }
 function unreadParentNotifications(athleteId=parentAthleteId){return parentNotificationList(athleteId).filter(n=>!n.read).length}
 function unreadCoachNotifications(id=coachId){return coachNotificationList(id).filter(n=>!n.read).length}
@@ -1645,7 +1647,7 @@ function loginPage() {
    <label>Nama Atlet<input name="name" required></label>
    <label>Jenis Kelamin<select name="gender" required><option value="">Pilih jenis kelamin</option><option>Laki-Laki</option><option>Perempuan</option></select></label>
    <label>Tanggal Lahir<input name="birth" type="date" required></label>
-   <label>Umur per 1 Januari 2026<input name="age" readonly placeholder="Otomatis"></label>
+   <label>Umur<input name="age" readonly placeholder="Otomatis"></label>
    <label>Kategori Kelas<select name="classCategory" required><option value="">Pilih kategori</option><option>Group</option><option>Private</option></select></label>
    <label>No. WhatsApp Orang Tua<input name="parentWhatsapp" inputmode="tel" required placeholder="Contoh: 081234567890"></label>
    <label class="full-field">Catatan Kesehatan<textarea name="healthNote" rows="3" placeholder="Alergi, riwayat penyakit, kebutuhan khusus, atau tulis Tidak ada" required></textarea></label>
@@ -1983,11 +1985,11 @@ function competitionPaymentsPage(){
 function generic(title,rows=[]){return `<section class="card"><h3>${title}</h3>${rows.length?rows.map(x=>`<div class="list-row">${esc(JSON.stringify(x))}</div>`).join(''):'<div class="empty">Belum ada data.</div>'}</section>`}
 function parentAthlete(){return state.athletes.find(a=>a.id===parentAthleteId)}
 
-function latestForAthlete(list, athleteId){return list.filter(x=>x.athleteId===athleteId).slice().sort((a,b)=>String(b.updatedAt||b.date||'').localeCompare(String(a.updatedAt||a.date||'')))[0]}
+function latestForAthlete(list, athleteId){return recordsForAthlete(list,athleteId).sort((a,b)=>String(b.updatedAt||b.date||'').localeCompare(String(a.updatedAt||a.date||'')))[0]}
 function targetStatusClass(status){return status==='Tercapai'?'approved':status==='Perlu Diulang'?'rejected':'pending'}
 function attendanceStats(athleteId){
  const now=new Date(),month=now.getMonth(),year=now.getFullYear()
- const rows=state.attendance.filter(r=>r.athleteId===athleteId&&(()=>{const d=new Date(`${r.date||''}T00:00:00`);return !Number.isNaN(d)&&d.getMonth()===month&&d.getFullYear()===year})())
+ const rows=recordsForAthlete(state.attendance,athleteId).filter(r=>(()=>{const d=new Date(`${r.date||''}T00:00:00`);return !Number.isNaN(d)&&d.getMonth()===month&&d.getFullYear()===year})())
  const present=rows.filter(r=>r.status==='Hadir').length
  const absent=rows.length-present
  return {rows,present,absent,total:rows.length,percentage:rows.length?Math.round(present/rows.length*100):0}
@@ -2069,7 +2071,7 @@ function parentDashboard(){
   <section class="card dashboard-panel"><div class="panel-head"><h3>Tagihan / Pembayaran</h3><button data-page="parentInvoices">Lihat Semua</button></div>${invoice?`<div class="invoice-summary"><div><b>${esc(invoice.title)}</b><small>Jatuh tempo ${esc(invoice.dueDate||'-')}</small></div><strong>Rp${Number(invoice.amount||0).toLocaleString('id-ID')}</strong></div>`:'<div class="notice">Tidak ada tagihan yang belum dibayar.</div>'}</section>
  </div>`
 }
-function parentProfile(){const a=parentAthlete(),link=(url,label)=>url?`<a class="secondary small inline-button" href="${esc(url)}" target="_blank" rel="noopener">Preview ${label}</a>`:'<span>Belum diunggah</span>';return `<section class="card profile-card">${a?.photo?`<img class="profile-photo" src="${a.photo}">`:'<span class="profile-photo placeholder">👤</span>'}<div><h2>${esc(a?.name)}</h2><p><b>ID Atlet:</b> ${esc(a?.id)}</p><p><b>Tanggal lahir:</b> ${esc(a?.birth)}</p><p><b>Umur per 1 Januari 2026:</b> ${a?.age} tahun</p><p><b>Kelompok usia:</b> ${esc(a?.ageGroup)}</p><p><b>Sekolah:</b> ${esc(a?.schoolName||'-')}</p><p><b>Nomor telepon:</b> ${esc(a?.parentPhone||a?.parentWhatsapp||'-')}</p></div></section><section class="card"><h3>Perbarui Profil Atlet</h3><form id="parentProfileForm" class="form-grid"><label>Nomor Telepon<input name="parentPhone" inputmode="tel" value="${esc(a?.parentPhone||a?.parentWhatsapp||'')}"></label><label>Nama Sekolah<input name="schoolName" value="${esc(a?.schoolName||'')}"></label><label>Kartu Keluarga<input name="familyCard" type="file" accept="image/*,application/pdf"><small>${link(a?.familyCard,'Kartu Keluarga')}</small></label><label>Akta Kelahiran<input name="birthCertificate" type="file" accept="image/*,application/pdf"><small>${link(a?.birthCertificate,'Akta Kelahiran')}</small></label><label>Foto Atlet<input name="photo" type="file" accept="image/*"></label><button class="primary" type="submit">Simpan Profil</button><p id="parentProfileError" class="form-error"></p></form></section>`}
+function parentProfile(){const a=parentAthlete(),link=(url,label)=>url?`<a class="secondary small inline-button" href="${esc(url)}" target="_blank" rel="noopener">Preview ${label}</a>`:'<span>Belum diunggah</span>';return `<section class="card profile-card">${a?.photo?`<img class="profile-photo" src="${a.photo}">`:'<span class="profile-photo placeholder">👤</span>'}<div><h2>${esc(a?.name)}</h2><p><b>ID Atlet:</b> ${esc(a?.id)}</p><p><b>Tanggal lahir:</b> ${esc(a?.birth)}</p><p><b>Umur:</b> ${calcAge(a?.birth)} tahun</p><p><b>Kelompok usia:</b> ${esc(a?.ageGroup)}</p><p><b>Sekolah:</b> ${esc(a?.schoolName||'-')}</p><p><b>Nomor telepon:</b> ${esc(a?.parentPhone||a?.parentWhatsapp||'-')}</p></div></section><section class="card"><h3>Perbarui Profil Atlet</h3><form id="parentProfileForm" class="form-grid"><label>Nomor Telepon<input name="parentPhone" inputmode="tel" value="${esc(a?.parentPhone||a?.parentWhatsapp||'')}"></label><label>Nama Sekolah<input name="schoolName" value="${esc(a?.schoolName||'')}"></label><label>Kartu Keluarga<input name="familyCard" type="file" accept="image/*,application/pdf"><small>${link(a?.familyCard,'Kartu Keluarga')}</small></label><label>Akta Kelahiran<input name="birthCertificate" type="file" accept="image/*,application/pdf"><small>${link(a?.birthCertificate,'Akta Kelahiran')}</small></label><label>Foto Atlet<input name="photo" type="file" accept="image/*"></label><button class="primary" type="submit">Simpan Profil</button><p id="parentProfileError" class="form-error"></p></form></section>`}
 function parentPrograms(){const a=parentAthlete();return `<section class="card"><h3>Program Latihan ${esc(a?.name)}</h3>${programCards(state.trainingPrograms.filter(p=>programAppliesToAthlete(p,a)).slice().reverse())}</section>`}
 function parentTimes(){const a=parentAthlete();const rows=state.timeRecords.filter(r=>r.athleteId===a?.id).sort((x,y)=>String(x.date||'').localeCompare(String(y.date||'')));return `<section class="card"><h3>Perkembangan Waktu ${esc(a?.name)}</h3><section class="record-insight-grid"><article class="insight-card"><h4>Grafik 8 Catatan Terakhir</h4>${progressBars(rows)}</article><article class="insight-card"><h4>Personal Best</h4>${personalBestSummary(rows)}</article></section><div class="table-wrap"><table><thead><tr><th>Gaya</th><th>Jenis</th><th>Tingkat</th><th>Tanggal</th><th>Waktu</th><th>Pelatih</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td>${r.stroke}</td><td>${r.type}</td><td>${r.level||'-'}</td><td>${r.date}</td><td><b>${r.time}</b></td><td>${esc(r.coachName||'Admin')}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">Belum ada catatan waktu.</td></tr>'}</tbody></table></div></section>`}
 
@@ -2299,7 +2301,7 @@ function athleteExportRows(){
   a.name||'',
   a.gender||'',
   a.birth||'',
-  Number.isFinite(a.age)?a.age:calcAge(a.birth),
+  calcAge(a.birth),
   a.ageGroup||calcGroup(a.birth),
   a.trainingCategory||'Pemula'
  ])
@@ -2369,7 +2371,7 @@ function athleteTable(){
  return `<section class="card"><div class="card-head"><div><h3>Data Atlet</h3><small>${rows.length} atlet terdaftar — ID berikutnya: <b>${nextAthleteId()}</b> — nomor tidak pernah dipakai ulang</small></div>${canManage?'<div class="athlete-export-actions"><button class="secondary small" id="downloadAthletesPdf">Download PDF</button><button class="secondary small" id="downloadAthletesExcel">Download Excel</button><button class="primary small" id="addAthlete">+ Tambah Atlet</button></div>':''}</div>
  <div class="athlete-filter-row"><input id="athleteSearch" placeholder="Cari ID atau nama atlet"><select id="athleteKuFilter"><option value="">Semua KU</option>${['KU 1','KU 2','KU 3','KU 4','KU 5A','KU 5B'].map(x=>`<option>${x}</option>`).join('')}</select></div>
  <div class="table-wrap"><table id="athleteDataTable"><thead><tr><th>Foto</th><th>ID Atlet</th><th>Nama Atlet</th><th>JK</th><th>Tempat, Tanggal Lahir</th><th>Umur</th><th>KU</th><th>Kategori</th><th>Sekolah</th><th>Nomor Telepon</th>${canManage?'<th>Aksi</th>':''}</tr></thead><tbody>
- ${rows.map(a=>`<tr data-athlete-row data-name="${esc((a.id+' '+a.name+' '+(a.schoolName||'')).toLowerCase())}" data-ku="${esc(a.ageGroup||calcGroup(a.birth))}"><td>${a.photo?`<img class="table-avatar" src="${a.photo}" alt="Foto ${esc(a.name)}">`:'<span class="table-avatar placeholder">♟</span>'}</td><td><b>${esc(a.id)}</b></td><td>${esc(a.name)}</td><td>${esc(a.gender||'-')}</td><td>${esc([a.birthPlace,a.birth].filter(Boolean).join(', ')||'-')}</td><td>${Number.isFinite(a.age)?a.age:calcAge(a.birth)} tahun</td><td>${esc(a.ageGroup||calcGroup(a.birth))}</td><td>${esc(a.trainingCategory||'Pemula')}</td><td>${esc(a.schoolName||'-')}</td><td>${esc(a.parentPhone||a.parentWhatsapp||'-')}</td>${canManage?`<td class="action-cell"><button class="secondary tiny" data-view-athlete="${esc(a.id)}">Detail</button><button class="primary tiny" data-edit-athlete="${esc(a.id)}">Edit</button><button class="warning tiny" data-reset-parent-password="${esc(a.id)}">Reset Akun</button><button class="danger tiny" data-delete-athlete="${esc(a.id)}">Hapus</button></td>`:''}</tr>`).join('')}
+ ${rows.map(a=>`<tr data-athlete-row data-name="${esc((a.id+' '+a.name+' '+(a.schoolName||'')).toLowerCase())}" data-ku="${esc(a.ageGroup||calcGroup(a.birth))}"><td>${a.photo?`<img class="table-avatar" src="${a.photo}" alt="Foto ${esc(a.name)}">`:'<span class="table-avatar placeholder">♟</span>'}</td><td><b>${esc(a.id)}</b></td><td>${esc(a.name)}</td><td>${esc(a.gender||'-')}</td><td>${esc([a.birthPlace,a.birth].filter(Boolean).join(', ')||'-')}</td><td>${calcAge(a.birth)} tahun</td><td>${esc(a.ageGroup||calcGroup(a.birth))}</td><td>${esc(a.trainingCategory||'Pemula')}</td><td>${esc(a.schoolName||'-')}</td><td>${esc(a.parentPhone||a.parentWhatsapp||'-')}</td>${canManage?`<td class="action-cell"><button class="secondary tiny" data-view-athlete="${esc(a.id)}">Detail</button><button class="primary tiny" data-edit-athlete="${esc(a.id)}">Edit</button><button class="warning tiny" data-reset-parent-password="${esc(a.id)}">Reset Akun</button><button class="danger tiny" data-delete-athlete="${esc(a.id)}">Hapus</button></td>`:''}</tr>`).join('')}
  </tbody></table></div></section>
  ${canManage?`<dialog id="athleteDialog"><form id="athleteForm" class="modal-form"><div class="card-head"><h3 id="athleteDialogTitle">Tambah Atlet</h3><button type="button" class="icon-btn" data-close>✕</button></div>
  <input type="hidden" name="editId"><label>Nama Lengkap<input name="name" required></label><label>Jenis Kelamin<select name="gender" required><option value="">Pilih</option><option>Laki-laki</option><option>Perempuan</option></select></label>
@@ -2736,15 +2738,14 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
   document.querySelectorAll('[data-approve-registration]').forEach(b=>b.onclick=async()=>{
    const r=state.pendingRegistrations.find(x=>x.id===b.dataset.approveRegistration)
    if(!r)return
-   const athleteId=nextAthleteId()
-   state.athletes.push({
-     id:athleteId,name:r.name,photo:r.photo||'',birth:r.birth,age:calcAge(r.birth),ageGroup:calcGroup(r.birth),
-     gender:r.gender||'',classCategory:r.classCategory||'',healthNotes:r.healthNote||'',birthCertificate:r.certificate||'',
-     registrationProof:r.paymentProof||'',package:r.package||'',parentWhatsapp:r.parentWhatsapp||'',
-     parentPassword:'',parentMustChange:true,registrationId:r.id,
-     trainingCategory:r.trainingCategory||'Pemula',trainingGroups:Array.isArray(r.trainingGroups)?r.trainingGroups:[calcGroup(r.birth)].filter(Boolean)
-   })
-   r.status='approved';r.approvedAt=new Date().toISOString();r.athleteId=athleteId
+   // Persetujuan bersifat IDEMPOTEN. Dulu setiap klik selalu membuat atlet
+   // baru; bila penyimpanan ke Supabase gagal, render() tidak pernah berjalan
+   // sehingga tombol Konfirmasi masih terpampang dan klik kedua melahirkan
+   // atlet KEDUA dengan ID berbeda untuk orang yang sama.
+   const hasil=approveRegistrationPure(state.athletes,r,nextAthleteId)
+   const athleteId=hasil.athlete.id
+   if(hasil.created)state.athletes.push(hasil.athlete)
+   r.status='approved';r.approvedAt=r.approvedAt||new Date().toISOString();r.athleteId=athleteId
     try{
       await commitCriticalRecord('athletes',athleteId)
       await commitCriticalRecord('pendingRegistrations',r.id)
@@ -2784,7 +2785,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
  document.querySelector('#athleteSearch')?.addEventListener('input',filterAthletes)
  document.querySelector('#athleteKuFilter')?.addEventListener('change',filterAthletes)
  function filterAthletes(){const q=String(document.querySelector('#athleteSearch')?.value||'').toLowerCase(),ku=String(document.querySelector('#athleteKuFilter')?.value||'');document.querySelectorAll('[data-athlete-row]').forEach(row=>row.hidden=!(row.dataset.name.includes(q)&&(!ku||row.dataset.ku===ku)))}
- document.querySelectorAll('[data-view-athlete]').forEach(b=>b.onclick=()=>{const a=state.athletes.find(x=>x.id===b.dataset.viewAthlete);if(!a)return;const fileLink=(v,label)=>v?`<a class="secondary small inline-button" href="${esc(v)}" target="_blank" rel="noopener">Preview/Download ${label}</a>`:'<span>Belum ada</span>';document.querySelector('#athleteDetailContent').innerHTML=`<div class="athlete-detail-grid"><div>${a.photo?`<img class="athlete-detail-photo" src="${esc(a.photo)}">`:'<div class="athlete-detail-photo placeholder">♟</div>'}</div><div><p><b>ID Atlet:</b> ${esc(a.id)}</p><p><b>Nama:</b> ${esc(a.name)}</p><p><b>Sekolah:</b> ${esc(a.schoolName||'-')}</p><p><b>Nomor Telepon:</b> ${esc(a.parentPhone||a.parentWhatsapp||'-')}</p><p><b>Tempat, Tanggal Lahir:</b> ${esc([a.birthPlace,a.birth].filter(Boolean).join(', ')||'-')}</p><p><b>Umur / KU:</b> ${a.age??calcAge(a.birth)} tahun / ${esc(a.ageGroup||calcGroup(a.birth))}</p><p><b>Catatan Kesehatan:</b> ${esc(a.healthNotes||'-')}</p><div class="document-actions">${fileLink(a.familyCard,'Kartu Keluarga')}${fileLink(a.birthCertificate,'Akta Kelahiran')}${fileLink(a.registrationProof,'Bukti Pembayaran')}</div></div></div>`;document.querySelector('#athleteDetailDialog').showModal()})
+ document.querySelectorAll('[data-view-athlete]').forEach(b=>b.onclick=()=>{const a=state.athletes.find(x=>x.id===b.dataset.viewAthlete);if(!a)return;const fileLink=(v,label)=>v?`<a class="secondary small inline-button" href="${esc(v)}" target="_blank" rel="noopener">Preview/Download ${label}</a>`:'<span>Belum ada</span>';document.querySelector('#athleteDetailContent').innerHTML=`<div class="athlete-detail-grid"><div>${a.photo?`<img class="athlete-detail-photo" src="${esc(a.photo)}">`:'<div class="athlete-detail-photo placeholder">♟</div>'}</div><div><p><b>ID Atlet:</b> ${esc(a.id)}</p><p><b>Nama:</b> ${esc(a.name)}</p><p><b>Sekolah:</b> ${esc(a.schoolName||'-')}</p><p><b>Nomor Telepon:</b> ${esc(a.parentPhone||a.parentWhatsapp||'-')}</p><p><b>Tempat, Tanggal Lahir:</b> ${esc([a.birthPlace,a.birth].filter(Boolean).join(', ')||'-')}</p><p><b>Umur / KU:</b> ${calcAge(a.birth)} tahun / ${esc(calcGroup(a.birth))}</p><p><b>Catatan Kesehatan:</b> ${esc(a.healthNotes||'-')}</p><div class="document-actions">${fileLink(a.familyCard,'Kartu Keluarga')}${fileLink(a.birthCertificate,'Akta Kelahiran')}${fileLink(a.registrationProof,'Bukti Pembayaran')}</div></div></div>`;document.querySelector('#athleteDetailDialog').showModal()})
  document.querySelectorAll('[data-reset-parent-password]').forEach(b=>b.onclick=async()=>{
    if(role!=='admin')return
    const a=state.athletes.find(x=>x.id===b.dataset.resetParentPassword)
@@ -2797,7 +2798,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
    alert(`Akun orang tua berhasil direset.\n\nUsername: ${a.id}\nPassword awal: ${a.id}\n\nOrang tua wajib mengganti password setelah login.`)
    render()
  })
- document.querySelectorAll('[data-edit-athlete]').forEach(b=>b.onclick=()=>{const a=state.athletes.find(x=>x.id===b.dataset.editAthlete),d=document.querySelector('#athleteDialog'),f=document.querySelector('#athleteForm');if(!a||!d||!f)return;document.querySelector('#athleteDialogTitle').textContent='Edit Data Atlet';f.elements.editId.value=a.id;f.elements.name.value=a.name||'';f.elements.gender.value=a.gender||'';f.elements.birthPlace.value=a.birthPlace||'';f.elements.birth.value=a.birth||'';f.elements.parentWhatsapp.value=a.parentPhone||a.parentWhatsapp||'';f.elements.schoolName.value=a.schoolName||'';f.elements.healthNotes.value=a.healthNotes||'';f.elements.trainingCategory.value=a.trainingCategory||'Pemula';f.querySelectorAll('[name="trainingGroups"]').forEach(x=>x.checked=(a.trainingGroups||[]).includes(x.value));document.querySelector('#athleteAuto').innerHTML=`<b>ID:</b> ${esc(a.id)} &nbsp; <b>Umur:</b> ${a.age??calcAge(a.birth)} tahun &nbsp; <b>KU:</b> ${esc(a.ageGroup||calcGroup(a.birth))}`;d.showModal()})
+ document.querySelectorAll('[data-edit-athlete]').forEach(b=>b.onclick=()=>{const a=state.athletes.find(x=>x.id===b.dataset.editAthlete),d=document.querySelector('#athleteDialog'),f=document.querySelector('#athleteForm');if(!a||!d||!f)return;document.querySelector('#athleteDialogTitle').textContent='Edit Data Atlet';f.elements.editId.value=a.id;f.elements.name.value=a.name||'';f.elements.gender.value=a.gender||'';f.elements.birthPlace.value=a.birthPlace||'';f.elements.birth.value=a.birth||'';f.elements.parentWhatsapp.value=a.parentPhone||a.parentWhatsapp||'';f.elements.schoolName.value=a.schoolName||'';f.elements.healthNotes.value=a.healthNotes||'';f.elements.trainingCategory.value=a.trainingCategory||'Pemula';f.querySelectorAll('[name="trainingGroups"]').forEach(x=>x.checked=(a.trainingGroups||[]).includes(x.value));document.querySelector('#athleteAuto').innerHTML=`<b>ID:</b> ${esc(a.id)} &nbsp; <b>Umur:</b> ${calcAge(a.birth)} tahun &nbsp; <b>KU:</b> ${esc(calcGroup(a.birth))}`;d.showModal()})
  document.querySelectorAll('[data-delete-athlete]').forEach(b=>b.onclick=async()=>{if(confirm('Hapus atlet ini?')){try{await deleteAthleteSafely(b.dataset.deleteAthlete)}catch(error){console.error('Penghapusan satu record atlet gagal:',error);alert(`Perubahan tersimpan di perangkat, tetapi Supabase gagal: ${error.message||error}`)}}})
  const rt=document.querySelector('#recordType');rt?.addEventListener('change',()=>document.querySelector('#levelField').classList.toggle('hidden',rt.value!=='Kejuaraan'))
  document.querySelector('#timeAthleteFilter')?.addEventListener('change',e=>{window.__ascTimeAthlete=e.target.value;render()})

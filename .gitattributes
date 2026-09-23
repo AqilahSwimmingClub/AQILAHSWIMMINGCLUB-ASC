@@ -3,3 +3,9 @@
 # berlebih. cr-at-eol memberi tahu git bahwa CR itu bagian dari terminator baris.
 # Aturan ini TIDAK mengubah isi berkas mana pun, hanya cara git memeriksanya.
 * whitespace=cr-at-eol
+
+# Aset web Android di bawah ini adalah HASIL BUILD (bundel Vite terminifikasi),
+# bukan kode yang ditulis tangan. Spasi di ujung baris di dalamnya adalah isi
+# string yang memang begitu, bukan kecerobohan, jadi berkas-berkas ini
+# dikecualikan dari pemeriksaan whitespace. Isinya tidak diubah oleh aturan ini.
+android/app/src/main/assets/public/** -whitespace
