@@ -16,8 +16,18 @@ import {
 import {
   calculateAge, ageGroupFor, recordsForAthlete,
   notificationsForParent, notificationsForCoach,
-  approveRegistration as approveRegistrationPure
+  approveRegistration as approveRegistrationPure,
+  atletUntukOrangTua, seluruhReferensiBerkas
 } from './lib/atlet.js'
+import { objectKeyDariUrl, masihDipakai } from './lib/berkas-aman.js'
+// Import PDF Hasil Perlombaan. PDF hanya sumber input: seluruh aturannya
+// (parsing, normalisasi, pencocokan, dedupe, PB) ada di modul murni ini.
+import { barisTeksPdf } from './lib/pdf-teks.js'
+import {
+  uraiBarisHasil, susunBarisImpor, barisSiapSimpan, keCatatanWaktu,
+  bolehImporHasilLomba, JENIS_IMPOR,
+  SIAP_SIMPAN, SUDAH_ADA, TIDAK_VALID, PERLU_KONFIRMASI, TIDAK_DITEMUKAN
+} from './lib/impor-hasil-lomba.js'
 
 // crypto.randomUUID() tidak selalu tersedia pada HTTP alamat IP lokal (mis. 192.168.x.x).
 // Gunakan generator UUID yang tetap bekerja di laptop, HP, localhost, dan jaringan Wi-Fi.
@@ -1256,6 +1266,27 @@ async function fileData(file, maxBytes=8*1024*1024, folder='documents') {
   if(file.size>maxBytes)throw new Error(`Ukuran file maksimal ${Math.round(maxBytes/1024/1024)} MB.`)
   return uploadBlobToStorage(file,file,folder,fileExtension(file))
 }
+// Membersihkan berkas yang SUDAH tergantikan.
+//
+// Dipanggil HANYA setelah reference baru benar-benar tersimpan. Sebelum itu
+// berkas lama tidak pernah disentuh, supaya koneksi yang putus di tengah tidak
+// membuat pengguna kehilangan Akta atau Bukti Pembayaran.
+//
+// Penghapusan memakai object key dari URL publik Supabase. URL yang bentuknya
+// tidak dikenali sengaja dilewati: lebih baik menyisakan berkas yatim daripada
+// menghapus objek yang salah.
+async function bersihkanBerkasTergantikan(urlLama){
+  const daftar=[...new Set((urlLama||[]).filter(Boolean))]
+  if(!daftar.length)return
+  const masihAktif=seluruhReferensiBerkas(state.athletes)
+  for(const url of daftar){
+    if(masihDipakai(url,masihAktif))continue
+    const key=objectKeyDariUrl(url,STORAGE_BUCKET)
+    if(!key)continue
+    try{await supabase.storage.from(STORAGE_BUCKET).remove([key])}
+    catch(galat){console.warn('Berkas lama gagal dibersihkan, dibiarkan apa adanya:',galat)}
+  }
+}
 async function registrationUpload(file, type, ownerId='') {
   if(!file||!file.size)return ''
   const supportedDocuments=['certificate','birth-certificate','family-card','registration-proof','coach-salary','payment','competition-payment']
@@ -1896,7 +1927,7 @@ function timeRecordsPage(){
  const distances=[25,50,100,200,400,800,1500]
  const selectedId=window.__ascTimeAthlete||''
  const selectedRecords=selectedId?rows.filter(r=>r.athleteId===selectedId):rows
- return `<section class="card"><div class="card-head"><div><h3>Catatan Waktu Atlet</h3><small>Rekam, edit, dan pantau perkembangan waktu latihan atau kejuaraan.</small></div><button class="primary small" id="addTime">+ Tambah Catatan Waktu</button></div>
+ return `<section class="card"><div class="card-head"><div><h3>Catatan Waktu Atlet</h3><small>Rekam, edit, dan pantau perkembangan waktu latihan atau kejuaraan.</small></div><div class="card-head-actions">${bolehImporHasilLomba(role)?`<button class="secondary small" id="importPdfHasil">\u2913 Import PDF Hasil Perlombaan</button>`:''}<button class="primary small" id="addTime">+ Tambah Catatan Waktu</button></div></div>
  <div class="record-toolbar"><label>Pilih Atlet untuk Grafik${athleteCombobox('timeAthleteFilter',selectedId,'timeAthleteFilter')}</label></div>
  <section class="record-insight-grid"><article class="insight-card"><h4>Grafik Perkembangan Waktu</h4>${progressBars(selectedRecords)}</article><article class="insight-card"><h4>Personal Best</h4>${personalBestSummary(selectedRecords)}</article></section>
  <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Atlet</th><th>Gaya Renang</th><th>Jarak</th><th>Jenis</th><th>Tingkat</th><th>Waktu</th><th>Pelatih</th><th>Aksi</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr><td>${esc(r.date||'-')}</td><td><b>${esc(r.athleteName||r.athleteId)}</b></td><td>${esc(r.stroke||'-')}</td><td>${esc(r.distance?`${r.distance} m`:'-')}</td><td>${esc(r.type||'-')}</td><td>${esc(r.level||'-')}</td><td><strong>${esc(r.time||'-')}</strong></td><td>${esc(r.coachName||'-')}</td><td><div class="table-actions"><button class="secondary tiny" data-edit-time="${r.id}">Edit</button><button class="danger tiny" data-delete-time="${r.id}">Hapus</button></div></td></tr>`).join(''):'<tr><td colspan="9" class="empty">Belum ada catatan waktu.</td></tr>'}</tbody></table></div></section>
@@ -1908,7 +1939,38 @@ function timeRecordsPage(){
  <label>Jenis<select id="recordType" name="type"><option>Latihan</option><option>Kejuaraan</option></select></label>
  <label id="levelField" class="hidden">Tingkat Kejuaraan<input name="level" placeholder="Kabupaten/Provinsi/Nasional"></label>
  <label>Waktu (MM:SS.CC atau MM.SS.CC)<input name="time" inputmode="decimal" required placeholder="01:25.48"></label>
- <button class="primary">Simpan Catatan Waktu</button></form></dialog>`
+ <button class="primary">Simpan Catatan Waktu</button></form></dialog>
+ ${bolehImporHasilLomba(role)?`<dialog id="importPdfDialog"><div class="modal-form">
+ <div class="card-head"><h3>Import PDF Hasil Perlombaan</h3><button type="button" class="icon-btn" data-close>\u2715</button></div>
+ <p class="hint">Pilih berkas PDF hasil perlombaan. Seluruh catatan yang tersimpan otomatis berjenis <b>${esc(JENIS_IMPOR)}</b>. Berkas PDF hanya dibaca sementara dan tidak disimpan.</p>
+ <label>Berkas PDF<input type="file" id="importPdfFile" accept="application/pdf,.pdf"></label>
+ <div id="importPdfStatus" class="notice hidden"></div>
+ <div id="importPdfPreview"></div>
+ <div class="modal-actions"><button class="primary" id="importPdfSave" disabled>Simpan Semua yang Cocok</button></div>
+ </div></dialog>`:''}`
+}
+
+// Baris preview import digambar terpisah supaya halaman Catatan Waktu tidak
+// perlu diubah bentuknya.
+function importPreviewTable(baris){
+ if(!baris.length)return '<div class="empty">Tidak ada hasil perlombaan yang terbaca dari PDF ini.</div>'
+ const lencana=b=>{
+  if(b.status===SIAP_SIMPAN)return '<span class="status status-approved">Siap Simpan</span>'
+  if(b.status===SUDAH_ADA)return '<span class="status status-pending">Sudah Ada</span>'
+  if(b.status===PERLU_KONFIRMASI)return '<span class="status status-pending">Perlu Konfirmasi</span>'
+  if(b.status===TIDAK_DITEMUKAN)return '<span class="status status-rejected">Tidak Ditemukan</span>'
+  return '<span class="status status-rejected">Tidak Valid</span>'
+ }
+ const siap=barisSiapSimpan(baris).length
+ return `<p class="hint"><b>${baris.length}</b> hasil terbaca \u00b7 <b>${siap}</b> siap disimpan.</p>
+ <div class="table-wrap"><table><thead><tr><th>Nama di PDF</th><th>Atlet ASC</th><th>Gaya</th><th>Jarak</th><th>Waktu</th><th>Jenis</th><th>Status</th><th>PB</th></tr></thead><tbody>
+ ${baris.map(b=>`<tr><td>${esc(b.namaPdf||'-')}</td>
+  <td>${b.athleteId?`<b>${esc(b.athleteId)}</b><small class="cell-sub">${esc(b.athleteName)}</small>`:(b.kandidat.length?`<small class="cell-sub">Kandidat: ${b.kandidat.map(k=>esc(k.name)).join(', ')}</small>`:'-')}</td>
+  <td>${esc(b.stroke||'-')}</td><td>${b.distance?`${b.distance} m`:'-'}</td>
+  <td><b>${esc(b.time||b.statusHasil||'-')}</b></td><td>${esc(b.jenis)}</td>
+  <td>${lencana(b)}${b.masalah.length?`<small class="cell-sub">${esc(b.masalah.join(' '))}</small>`:''}</td>
+  <td>${b.pb?'\u2b50':'-'}</td></tr>`).join('')}
+ </tbody></table></div>`
 }
 
 
@@ -1983,7 +2045,8 @@ function competitionPaymentsPage(){
 }
 
 function generic(title,rows=[]){return `<section class="card"><h3>${title}</h3>${rows.length?rows.map(x=>`<div class="list-row">${esc(JSON.stringify(x))}</div>`).join(''):'<div class="empty">Belum ada data.</div>'}</section>`}
-function parentAthlete(){return state.athletes.find(a=>a.id===parentAthleteId)}
+// Gagal-tertutup: tanpa ID yang jelas hasilnya null, bukan atlet pertama.
+function parentAthlete(){return atletUntukOrangTua(state.athletes,parentAthleteId)}
 
 function latestForAthlete(list, athleteId){return recordsForAthlete(list,athleteId).sort((a,b)=>String(b.updatedAt||b.date||'').localeCompare(String(a.updatedAt||a.date||'')))[0]}
 function targetStatusClass(status){return status==='Tercapai'?'approved':status==='Perlu Diulang'?'rejected':'pending'}
@@ -2776,10 +2839,22 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
    const existing=state.athletes.find(a=>a.id===editId),athleteId=existing?.id||nextAthleteId()
    try{
    setFormBusy(form,true,'Mengunggah dan menyimpan...')
-   const uploadOrKeep=async(file,type,oldValue='')=>file&&file.size?registrationUpload(file,type,athleteId):oldValue
+   // Berkas baru diunggah lebih dulu; nilai lama hanya ditinggalkan setelah
+   // unggahan berhasil. Bila unggahan gagal, galatnya menyebar dan record
+   // tidak jadi diperbarui - reference lama tetap aktif.
+   const berkasTergantikan=[]
+   const uploadOrKeep=async(file,type,oldValue='')=>{
+     if(!(file&&file.size))return oldValue
+     const url=await registrationUpload(file,type,athleteId)
+     if(oldValue&&oldValue!==url)berkasTergantikan.push(oldValue)
+     return url
+   }
    const athlete={...(existing||{}),id:athleteId,name:String(f.get('name')).trim(),gender:String(f.get('gender')||''),birthPlace:String(f.get('birthPlace')||''),birth,age:calcAge(birth),ageGroup:calcGroup(birth),parentWhatsapp:String(f.get('parentWhatsapp')||''),parentPhone:String(f.get('parentWhatsapp')||''),schoolName:String(f.get('schoolName')||''),healthNotes:String(f.get('healthNotes')||''),photo:await uploadOrKeep(f.get('photo'),'photo',existing?.photo||''),familyCard:await uploadOrKeep(f.get('familyCard'),'family-card',existing?.familyCard||''),birthCertificate:await uploadOrKeep(f.get('birthCertificate'),'birth-certificate',existing?.birthCertificate||''),registrationProof:await uploadOrKeep(f.get('registrationProof'),'registration-proof',existing?.registrationProof||''),trainingCategory:String(f.get('trainingCategory')||'Pemula'),trainingGroups:f.getAll('trainingGroups'),parentPassword:existing?.parentPassword||'',parentMustChange:existing?.parentMustChange??true,profileUpdatedAt:new Date().toISOString(),profileUpdatedBy:'admin',updatedAt:new Date().toISOString()}
    if(existing)Object.assign(existing,athlete);else state.athletes.push({...athlete,createdAt:new Date().toISOString()})
-   await commitCriticalRecord('athletes',athlete.id);document.querySelector('#athleteDialog').close();render()
+   await commitCriticalRecord('athletes',athlete.id)
+   // Baru di sini berkas lama boleh dibersihkan.
+   await bersihkanBerkasTergantikan(berkasTergantikan)
+   document.querySelector('#athleteDialog').close();render()
    }catch(err){alert(err.message||'Data atlet gagal disimpan.')}finally{setFormBusy(form,false)}
  })
  document.querySelector('#athleteSearch')?.addEventListener('input',filterAthletes)
@@ -2804,6 +2879,72 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=(event)=>{event.pr
  document.querySelector('#timeAthleteFilter')?.addEventListener('change',e=>{window.__ascTimeAthlete=e.target.value;render()})
  document.querySelector('#timeForm')?.addEventListener('submit',async e=>{
   e.preventDefault();const f=new FormData(e.currentTarget);let time=String(f.get('time')||'').trim().replace(',', '.');const m=time.match(/^(\d{1,2})[:.](\d{2})[.:](\d{2})$/);if(!m)return alert('Format waktu gunakan MM:SS.CC atau MM.SS.CC, contoh 01:25.48');time=`${m[1].padStart(2,'0')}.${m[2]}.${m[3]}`;const a=state.athletes.find(x=>x.id===f.get('athleteId'));if(!a)return alert('Atlet tidak ditemukan.');const c=currentCoach();const editId=String(f.get('editId')||'');const payload={athleteId:a.id,athleteName:a.name,stroke:f.get('stroke'),distance:Number(f.get('distance')||0),type:f.get('type'),level:f.get('type')==='Kejuaraan'?f.get('level'):'',date:f.get('date'),time,coachId:c?.id||'',coachName:c?.name||'Admin'};let recordId=editId;if(editId){const i=state.timeRecords.findIndex(r=>r.id===editId);if(i>=0)state.timeRecords[i]={...state.timeRecords[i],...payload,updatedAt:new Date().toISOString()}}else{recordId=createId();state.timeRecords.push({id:recordId,...payload,createdAt:new Date().toISOString()})}try{setFormBusy(e.currentTarget,true,'Menyimpan...');await commitCriticalRecord('timeRecords',recordId);if(!editId)sendPushNotification({target:'parent',athleteId:a.id,title:'Catatan Waktu Baru',message:`Catatan waktu terbaru untuk ${a.name} telah ditambahkan.`,page:'parentTimes',type:'time_record_created',referenceType:'time_record',eventId:recordId});document.querySelector('#timeDialog')?.close();render()}catch(err){alert(err.message||'Catatan waktu gagal disimpan.')}finally{setFormBusy(e.currentTarget,false)}
+ })
+ // --- Import PDF Hasil Perlombaan (Admin saja) ---------------------------
+ // PDF hanya dibaca di memori. Byte-nya dilepas begitu parsing selesai, dan
+ // tidak pernah diunggah, disimpan ke basis data, maupun ditulis ke
+ // localStorage. Catatan Waktu yang sudah tersimpan tidak terpengaruh.
+ let importBaris=[]
+ const importStatus=(pesan,galat=false)=>{
+  const el=document.querySelector('#importPdfStatus')
+  if(!el)return
+  el.classList.toggle('hidden',!pesan)
+  el.classList.toggle('form-error',galat)
+  el.textContent=pesan||''
+ }
+ document.querySelector('#importPdfHasil')?.addEventListener('click',()=>{
+  if(!bolehImporHasilLomba(role))return
+  importBaris=[]
+  const f=document.querySelector('#importPdfFile');if(f)f.value=''
+  const pratinjau=document.querySelector('#importPdfPreview');if(pratinjau)pratinjau.innerHTML=''
+  const simpan=document.querySelector('#importPdfSave');if(simpan)simpan.disabled=true
+  importStatus('')
+  document.querySelector('#importPdfDialog')?.showModal()
+ })
+ document.querySelector('#importPdfFile')?.addEventListener('change',async e=>{
+  if(!bolehImporHasilLomba(role))return
+  const berkas=e.currentTarget.files?.[0]
+  const simpan=document.querySelector('#importPdfSave')
+  importBaris=[];if(simpan)simpan.disabled=true
+  const pratinjau=document.querySelector('#importPdfPreview');if(pratinjau)pratinjau.innerHTML=''
+  if(!berkas)return importStatus('')
+  importStatus('Membaca PDF...')
+  let byte=null
+  try{
+   byte=new Uint8Array(await berkas.arrayBuffer())
+   const baris=await barisTeksPdf(byte)
+   importBaris=susunBarisImpor(uraiBarisHasil(baris),state.athletes,state.timeRecords)
+   if(pratinjau)pratinjau.innerHTML=importPreviewTable(importBaris)
+   const siap=barisSiapSimpan(importBaris).length
+   if(simpan)simpan.disabled=siap===0
+   importStatus(siap?'':'Tidak ada baris yang siap disimpan. Periksa status tiap baris.',!siap)
+  }catch(galat){
+   importStatus(galat.message||'PDF tidak dapat dibaca.',true)
+  }finally{
+   // Byte PDF dilepas di sini, berhasil maupun gagal.
+   byte=null
+   e.currentTarget.value=''
+  }
+ })
+ document.querySelector('#importPdfSave')?.addEventListener('click',async e=>{
+  // Penjaga kedua: bukan sekadar menyembunyikan tombol.
+  if(!bolehImporHasilLomba(role))return
+  const catatan=keCatatanWaktu(importBaris,{buatId:createId,coachId:currentCoach()?.id||'',coachName:currentCoach()?.name||'Admin'})
+  if(!catatan.length)return
+  const tombol=e.currentTarget;tombol.disabled=true;tombol.textContent='Menyimpan...'
+  let berhasil=0,gagal=0
+  for(const c of catatan){
+   // Masuk lewat state.timeRecords dan jalur simpan yang SAMA dengan input
+   // manual - tidak ada koleksi kedua.
+   state.timeRecords.push(c)
+   try{await commitCriticalRecord('timeRecords',c.id);berhasil++}
+   catch(galat){console.error('Catatan waktu hasil import gagal disimpan:',galat);gagal++}
+  }
+  tombol.textContent='Simpan Semua yang Cocok'
+  importBaris=[]
+  document.querySelector('#importPdfDialog')?.close()
+  alert(gagal?`${berhasil} catatan waktu tersimpan, ${gagal} gagal dikirim ke Supabase.`:`${berhasil} catatan waktu berhasil ditambahkan sebagai ${JENIS_IMPOR}.`)
+  render()
  })
  document.querySelectorAll('[data-edit-time]').forEach(b=>b.onclick=()=>{const r=state.timeRecords.find(x=>x.id===b.dataset.editTime),d=document.querySelector('#timeDialog'),f=document.querySelector('#timeForm');if(!r||!d||!f)return;f.elements.editId.value=r.id;f.elements.athleteId.value=r.athleteId||'';f.elements.date.value=r.date||'';f.elements.stroke.value=r.stroke||'';f.elements.distance.value=String(r.distance||25);f.elements.type.value=r.type||'Latihan';f.elements.level.value=r.level||'';f.elements.time.value=r.time||'';document.querySelector('#timeDialogTitle').textContent='Edit Catatan Waktu';document.querySelector('#levelField')?.classList.toggle('hidden',f.elements.type.value!=='Kejuaraan');d.showModal()})
  document.querySelectorAll('[data-delete-time]').forEach(b=>b.onclick=async()=>{try{await deleteDedicatedSafely('timeRecords',b.dataset.deleteTime)}catch(error){console.error('Catatan waktu gagal ditandai terhapus:',error);alert(error.message||'Catatan waktu belum terhapus di Supabase.')}})

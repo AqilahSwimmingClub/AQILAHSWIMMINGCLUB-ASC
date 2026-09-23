@@ -197,3 +197,41 @@ export function approveRegistration(athletes, registration, buatId, referenceDat
   const athlete = athleteFromRegistration(registration, athleteId, referenceDate)
   return { athletes: daftar.concat([athlete]), athlete, created: true }
 }
+
+// --- Akses dokumen atlet ----------------------------------------------------
+
+// Atlet yang boleh dibaca sebuah akun Orang Tua.
+//
+// GAGAL-TERTUTUP: tanpa ID yang jelas hasilnya null, bukan atlet pertama atau
+// seluruh daftar. Inilah satu-satunya pintu Orang Tua menuju data anaknya,
+// sehingga dokumen milik atlet lain tidak pernah terjangkau.
+export function atletUntukOrangTua(athletes, parentAthleteId) {
+  const id = String(parentAthleteId || '')
+  if (!id) return null
+  return (Array.isArray(athletes) ? athletes : []).find(a => String(a?.id || '') === id) || null
+}
+
+// Dokumen yang melekat pada satu atlet. Selalu diambil dari record atlet itu
+// sendiri, tidak pernah dari salinan per-role.
+export function dokumenAtlet(athlete) {
+  const a = athlete || {}
+  return {
+    photo: a.photo || '',
+    familyCard: a.familyCard || '',
+    birthCertificate: a.birthCertificate || '',
+    registrationProof: a.registrationProof || ''
+  }
+}
+
+// Seluruh URL berkas yang masih menjadi reference aktif di state.
+//
+// Dipakai sebagai penjaga terakhir sebelum berkas lama dihapus: selama sebuah
+// URL masih muncul di sini, berkasnya tidak boleh disentuh.
+export function seluruhReferensiBerkas(athletes) {
+  const hasil = []
+  for (const a of (Array.isArray(athletes) ? athletes : [])) {
+    const d = dokumenAtlet(a)
+    for (const url of Object.values(d)) if (url) hasil.push(url)
+  }
+  return hasil
+}
