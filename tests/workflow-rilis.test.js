@@ -441,3 +441,47 @@ test('alias yang tidak ada di keystore ditolak', { skip: !adaKeytool() }, () => 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// --- Pembuktian kenaikan versionCode ---------------------------------------
+// Rilis v1.2.3 sempat gagal menjadi GitHub Release: mode `pembaruan`
+// mensyaratkan --version-code-lama, sedangkan secret ASC_VERSION_CODE_LAMA
+// tidak diisi, sehingga verifikator keluar dengan kode 2. Batas bawah
+// --version-code-minimal kini diakui sebagai bukti yang setara.
+
+test('batas bawah versionCode dinaikkan mengikuti rilis', () => {
+  const cocok = WORKFLOW.match(/VERSION_CODE_MINIMAL:\s*'(\d+)'/)
+  assert.ok(cocok, 'VERSION_CODE_MINIMAL harus ada')
+  const minimal = Number(cocok[1])
+
+  const gradle = readFileSync('android/gradle.properties', 'utf8')
+  const versi = Number(gradle.match(/^ascVersionCode=(\d+)$/m)[1])
+
+  assert.equal(minimal, versi,
+    'batas bawah harus sama dengan versionCode yang diterbitkan, supaya kenaikan versi terbukti')
+})
+
+test('verifikator menerima batas bawah sebagai bukti kenaikan versi', () => {
+  const sumber = readFileSync('scripts/verifikasi-apk.cjs', 'utf8')
+  assert.match(sumber, /const versiTerbukti = Boolean\(versionCodeLama\) \|\| Boolean\(batasVersionCode\)/)
+  // Sertifikat tetap wajib: batas bawah TIDAK menggantikan kesamaan tanda tangan.
+  assert.match(sumber, /Boolean\(sidikJariAcuan\) && versiTerbukti/)
+})
+
+test('tanpa acuan versi mana pun, kenaikan versi tetap belum terbukti', () => {
+  const sumber = readFileSync('scripts/verifikasi-apk.cjs', 'utf8')
+  assert.match(sumber, /if \(!versionCodeLama && !batasVersionCode\)/)
+})
+
+test('versionName tidak memakai suffix nomor build', () => {
+  const gradle = readFileSync('android/gradle.properties', 'utf8')
+  const nama = gradle.match(/^ascVersionName=(.+)$/m)[1].trim()
+  assert.match(nama, /^\d+\.\d+\.\d+$/, `versionName harus sederhana, bukan '${nama}'`)
+})
+
+test('nama artifact dan tag tidak memakai suffix nomor build', () => {
+  assert.match(WORKFLOW, /name: asc-apk-DEBUG-UJI-SAJA-\$\{\{ steps\.versi\.outputs\.version_name \}\}\s*$/m)
+  assert.match(WORKFLOW, /name: asc-apk-release-\$\{\{ steps\.versi\.outputs\.version_name \}\}\s*$/m)
+  assert.match(WORKFLOW, /tag_name: v\$\{\{ steps\.versi\.outputs\.version_name \}\}\s*$/m)
+  // Tidak ada lagi penggabungan dengan version_code pada penamaan.
+  assert.doesNotMatch(WORKFLOW, /asc-apk-release-\$\{\{ steps\.versi\.outputs\.version_name \}\}-\$\{\{/)
+})

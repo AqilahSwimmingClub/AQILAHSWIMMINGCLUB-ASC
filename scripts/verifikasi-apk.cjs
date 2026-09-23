@@ -143,6 +143,7 @@ function main() {
 
   // --- Penilaian ----------------------------------------------------------
   const mode = arg.mode === 'instalasi_baru' ? 'instalasi_baru' : 'pembaruan'
+  const batasVersionCode = arg['version-code-minimal'] || ''
 
   // Pada instalasi_baru tidak ada APK lama, jadi kenaikan versionCode tidak
   // dapat dibandingkan; yang berlaku adalah batas bawah versionCode.
@@ -153,13 +154,21 @@ function main() {
       targetSdkMinimal: arg['target-sdk-minimal'] || HARAPAN.targetSdkMinimal,
       sidikJari: sidikJariAcuan,
       versionCodeLebihDari: mode === 'instalasi_baru' ? '' : versionCodeLama,
-      versionCodeMinimal: arg['version-code-minimal'] || ''
+      versionCodeMinimal: batasVersionCode
     }
   )
 
+  // Kenaikan versionCode dapat dibuktikan lewat dua jalur yang sama kuatnya:
+  //   - versionCode APK lama diketahui, dan versionCode baru lebih tinggi; atau
+  //   - batas bawah --version-code-minimal ditetapkan setara versionCode rilis
+  //     berikutnya, dan versionCode baru memenuhinya.
+  // Jalur kedua justru lebih tegas: 'minimal 6' menyatakan angka pastinya,
+  // sedangkan 'lebih tinggi daripada yang lama' bergantung pada nilai yang
+  // mungkin tidak tersedia. Tanpa salah satunya, kenaikan versi belum terbukti.
+  const versiTerbukti = Boolean(versionCodeLama) || Boolean(batasVersionCode)
   const bisaUpdate = mode === 'instalasi_baru'
     ? Boolean(sidikJariAcuan) && masalah.length === 0
-    : Boolean(sidikJariAcuan) && Boolean(versionCodeLama) && masalah.length === 0
+    : Boolean(sidikJariAcuan) && versiTerbukti && masalah.length === 0
 
   if (arg.json) {
     writeFileSync(arg.json, JSON.stringify({
@@ -204,11 +213,16 @@ function main() {
     process.exit(bisaUpdate ? 0 : 2)
   }
 
-  if (!versionCodeLama) {
-    console.log('\n  [PERHATIAN] versionCode APK lama tidak diketahui, kenaikan versi belum dibuktikan.')
+  if (!versionCodeLama && !batasVersionCode) {
+    console.log('\n  [PERHATIAN] versionCode APK lama tidak diketahui dan tidak ada batas bawah,')
+    console.log('              sehingga kenaikan versi belum dibuktikan.')
     process.exit(2)
   }
-  console.log(`  [OK] versionCode naik: ${versionCodeLama} -> ${identitas.versionCode}.`)
+  if (versionCodeLama) {
+    console.log(`  [OK] versionCode naik: ${versionCodeLama} -> ${identitas.versionCode}.`)
+  } else {
+    console.log(`  [OK] versionCode ${identitas.versionCode} memenuhi batas bawah rilis ini (${batasVersionCode}).`)
+  }
   console.log('\n============================================================')
   console.log(' APK TERBUKTI DAPAT DIPASANG SEBAGAI PEMBARUAN')
   console.log(' Pasang langsung menimpa aplikasi lama. Tanpa uninstall.')
